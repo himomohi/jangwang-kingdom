@@ -1,9 +1,16 @@
 import { facingAngle } from '../sim/combat';
+import type { Facing as SimFacing } from '../sim/types';
 import { C, OUTLINE, JOB_COLORS, ENEMY_COLORS } from './palette';
 import { jobSilhouette, strideSquash, swingAngle } from './anim';
+import { computeHumanoidPose, facingProjection } from './rig';
 
-/** Facing: 0=down, 1=up, 2=left, 3=right */
-export type Facing = 0 | 1 | 2 | 3;
+/**
+ * True 8-direction facing (numeric preserves legacy 0..3 for save compat):
+ * 0=S(down) 1=N(up) 2=W(left) 3=E(right) 4=SW 5=SE 6=NW 7=NE.
+ * Conceptual clockwise order: N, NE, E, SE, S, SW, W, NW.
+ * Diagonals render as 3/4 view with perspective foreshortening.
+ */
+export type Facing = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 /** Animation state hint (interpreted from sim timers by art/anim.ts). */
 export type AnimState =
@@ -60,10 +67,16 @@ function R(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: nu
 }
 
 export function drawShadow(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, height = 0): void {
+  // Soft contact shadow (tight, directly under feet — grounds the character)
+  // + height drop shadow (SE offset, NW key light, fades with height).
+  ctx.fillStyle = 'rgba(16,24,40,0.30)';
+  ctx.beginPath();
+  ctx.ellipse(Math.round(x + 1), Math.round(y + 1), r * 0.62, Math.max(1.5, r * 0.62 * 0.34), 0, 0, Math.PI * 2);
+  ctx.fill();
   // NW key light => shadows fall to SE. Higher objects offset further + fade.
   const dx = 2 + height * 0.45;
   const dy = 1 + height * 0.22;
-  const alpha = Math.max(0.12, 0.35 - height * 0.022);
+  const alpha = Math.max(0.10, 0.30 - height * 0.022);
   const rr = Math.max(1.5, r * (1 - height * 0.015));
   ctx.fillStyle = `rgba(16,24,40,${alpha.toFixed(3)})`;
   ctx.beginPath();
@@ -139,18 +152,37 @@ export function drawHumanoid(
   col: HumanoidColors,
   extras: Extras,
 ): void {
-  const s = o.scale;
+  const s = Number.isFinite(o.scale) && o.scale > 0 ? Math.max(0.4, Math.min(3, o.scale)) : 1;
   const px = (n: number): number => n * s;
   const sil = jobSilhouette(extrasJob(extras));
   const profile = o.profile ?? extrasJob(extras);
   const anim = o.anim ?? (o.swing >= 0 ? 'attack' : o.moving ? 'walk' : 'idle');
   const dead = anim === 'dead';
-  const fallK = dead ? Math.min(1, (o.deadT ?? 0.3) / 0.35) : 0;
+  const _deadT = Number.isFinite(o.deadT) ? (o.deadT as number) : 0.3;
+  const fallK = dead ? Math.min(1, _deadT / 0.35) : 0;
 
-  const side = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
-  const up = o.facing === 1;
-  const fx = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
-  const fy = o.facing === 0 ? 1 : o.facing === 1 ? -1 : 0;
+  // True 8-way projection + per-joint IK pose (computed every frame;
+  // static meshes/materials cached in rig.ts, no per-frame mesh regen).
+  const proj = facingProjection(o.facing as SimFacing);
+  const rigPose = computeHumanoidPose({
+    x: o.x, y: o.y, facing: o.facing as SimFacing,
+    phase: o.phase, moving: o.moving,
+    swing: o.swing, cast: o.cast ?? -1, potion: o.potion ?? -1,
+    hurtK: o.hurtK ?? 0, talkK: o.talkK ?? 0,
+    windupK: o.windupK ?? 0, dashK: o.dashK ?? 0,
+    deadT: o.deadT ?? 0, leanX: o.leanX ?? 0, leanY: o.leanY ?? 0,
+    scale: s, job: extrasJob(extras), anim,
+  });
+  const side = proj.side;
+  const vert = proj.vert;
+  const diagonal = proj.diagonal;
+  const faceMode = proj.faceMode;
+  // back view = N + back 3/4 (NW/NE); front 3/4 (SW/SE) shows eyes.
+  const up = faceMode === 'back' || (diagonal && vert < -0.3);
+  const isSideView = faceMode === 'sideL' || faceMode === 'sideR';
+  const fa8 = facingAngle(o.facing as SimFacing);
+  const fx = Math.cos(fa8);
+  const fy = Math.sin(fa8);
 
   // ---- pose drivers (all 0..1) ----
   const swingT = o.swing >= 0 ? Math.min(1, o.swing) : -1;
@@ -166,11 +198,12 @@ export function drawHumanoid(
   const windupK = o.windupK ?? 0;
   const dashK = o.dashK ?? 0;
 
-  // ---- root + stride ----
+  // ---- root + stride (8-way: side/diagonal stride reads the facing) ----
   const stride = Math.sin(o.phase);
-  const sideView = o.facing === 2 || o.facing === 3;
-  const legAmp = (sideView ? 2.2 : 1.4) * (dead ? 0 : 1);
-  const armAmp = (sideView ? 1.8 : 1.2) * (dead ? 0 : 1);
+  const strideAmp = isSideView ? 1 : diagonal ? 0.82 : 0.64;
+  const legAmp = (isSideView ? 2.2 : diagonal ? 1.9 : 1.4) * (dead ? 0 : 1);
+  const armAmp = (isSideView ? 1.8 : diagonal ? 1.5 : 1.2) * (dead ? 0 : 1);
+  void strideAmp;
   const legSwing = o.moving && !dead ? stride * legAmp : 0;
   const armSwing = o.moving && !dead ? -stride * armAmp : 0;
   const bob = o.moving && !dead ? Math.abs(stride) * 1 : 0;
@@ -192,164 +225,270 @@ export function drawHumanoid(
   const flash = o.flash ? C.BONE : null;
   const wide = Math.round((-sqPx + hurtK * 1 + castK * 0.5 + fallK * 2) * s);
 
-  // ================= legs / robe =================
+  // ================= legs / robe (8-way foreshortened, far leg behind) =================
+  const squashX = proj.squashX;
+  const lswX = Math.round(legSwing * (Math.abs(fx) * 0.7 + 0.3) * s);
+  const lswY = Math.round(legSwing * fy * 0.45 * s);
+  const farLegLift = proj.farLeg ? 1 * s : 0;
   if (sil.robe && !dead) {
     // arcanist robe skirt (legs hidden): sway reads the stride instead
-    const sway = o.moving ? Math.round(stride * px(1)) : 0;
+    const sway = o.moving ? Math.round(stride * px(1) * (Math.abs(fx) * 0.6 + 0.4)) : 0;
+    const swayY = o.moving ? Math.round(stride * fy * 0.8 * s) : 0;
     const skirtH = px(7);
-    R(ctx, cx - px(5) + sway * 0.3, feet - skirtH + px(bob), px(10), skirtH, flash ?? OUTLINE);
-    R(ctx, cx - px(4) + sway * 0.3, feet - skirtH + px(bob), px(8), skirtH - 1, flash ?? col.armor);
-    R(ctx, cx - px(4) + sway, feet - px(2), px(3), px(2), flash ?? col.armor);
-    R(ctx, cx + px(1) - sway, feet - px(2), px(3), px(2), flash ?? col.armor);
-    R(ctx, cx - px(3), feet - skirtH + px(bob), px(1), skirtH - 1, flash ?? col.trim);
+    const skirtW = px(10) * squashX;
+    const skirtX = cx - skirtW / 2 + sway * 0.3;
+    R(ctx, skirtX, feet - skirtH + px(bob) + swayY * 0.2, skirtW, skirtH, flash ?? OUTLINE);
+    R(ctx, skirtX + 1, feet - skirtH + px(bob) + swayY * 0.2, skirtW - 2, skirtH - 1, flash ?? col.armor);
+    R(ctx, skirtX + 1 + sway, feet - px(2), px(3), px(2), flash ?? col.armor);
+    R(ctx, skirtX + skirtW - px(4) - sway, feet - px(2), px(3), px(2), flash ?? col.armor);
+    R(ctx, skirtX + 2, feet - skirtH + px(bob), 1, skirtH - 1, flash ?? col.trim);
+    // NW light: skirt top-left lift
+    if (!flash) R(ctx, skirtX + 1, feet - skirtH + px(bob) + swayY * 0.2, skirtW - 2, 1, C.MIST);
   } else {
     const spread = dead ? Math.round(fallK * px(2)) : 0;
     const legH = Math.max(1, px(5) - px(bob) - px(fallK * 2.5));
     const legTop = feet - px(5) + px(bob) + px(fallK * 2.5);
-    const lsw = Math.round(legSwing * s);
-    R(ctx, cx - px(4) - spread, legTop, px(3), legH, flash ?? OUTLINE);
-    R(ctx, cx + px(1) + spread, legTop, px(3), legH, flash ?? OUTLINE);
-    R(ctx, cx - px(4) - spread + lsw * 0.4, legTop, px(3), Math.max(1, legH - px(2)), flash ?? col.legs);
-    R(ctx, cx + px(1) + spread - lsw * 0.4, legTop, px(3), Math.max(1, legH - px(2)), flash ?? col.legs);
-    // boots
-    R(ctx, cx - px(4) - spread + lsw * 0.4, feet - px(2), px(3), px(2), flash ?? col.boots);
-    R(ctx, cx + px(1) + spread - lsw * 0.4, feet - px(2), px(3), px(2), flash ?? col.boots);
+    // foreshortened leg bases (side/diagonal legs closer = depth)
+    const baseLX = cx - px(4) * squashX - spread;
+    const baseRX = cx + px(1) * squashX + spread + (1 - squashX) * px(1.5);
+    const drawLeg = (which: 'L' | 'R', behind: boolean): void => {
+      const isL = which === 'L';
+      const sx = isL ? lswX * 0.4 : -lswX * 0.4;
+      const sy = isL ? lswY * 0.4 : -lswY * 0.4;
+      const lift = behind ? -farLegLift : 0;
+      const lx0 = (isL ? baseLX : baseRX) + sx;
+      const ly0 = legTop + sy + lift;
+      const bootY = feet - px(2) + sy + lift;
+      R(ctx, lx0, ly0, px(3), legH, flash ?? OUTLINE);
+      R(ctx, lx0, ly0, px(3), Math.max(1, legH - px(2)), flash ?? col.legs);
+      R(ctx, lx0, bootY, px(3), px(2), flash ?? col.boots);
+      // NW key: top-edge lift (near leg brighter = volume)
+      if (!flash) {
+        ctx.save();
+        ctx.globalAlpha = behind ? 0.22 : 0.5;
+        R(ctx, lx0, ly0, px(3), 1, C.MIST);
+        ctx.restore();
+      }
+    };
+    // depth-sorted: far leg behind (drawn first), near leg front
+    if (proj.farLeg === 'L') { drawLeg('L', true); drawLeg('R', false); }
+    else if (proj.farLeg === 'R') { drawLeg('R', true); drawLeg('L', false); }
+    else { drawLeg('L', false); drawLeg('R', false); }
   }
 
-  // ================= torso =================
-  const hw = sil.torsoHW + wide * 0.4;
+  // ================= torso + arms (depth-sorted: far arm behind torso) =================
+  // perspective squash: N/S vs E/W + diagonal 3/4 foreshorten
+  const hw = sil.torsoHW * squashX + wide * 0.4 * squashX;
   const torsoY = top + px(7) + ly * 0.4;
-  const torsoH = Math.max(2, px(6) - px(fallK * 2.5) + sqPx * s * 0.5);
+  const torsoH = Math.max(2, (px(6) - px(fallK * 2.5) + sqPx * s * 0.5) * proj.squashY + (1 - proj.squashY) * px(0.5));
+  // arm anchors (8-way: weapon arm = near/visible hand, off-hand guards)
+  const weaponArm = proj.weaponArm;
+  const armBaseY = torsoY + 1;
+  const lArmYBase = armBaseY + (o.moving ? armSwing * 0.5 * s : 0) + (casting && extras === 'shrine' ? -px(3) * castK : 0);
+  const rArmYBase = armBaseY - (o.moving ? armSwing * 0.5 * s : 0) + (casting && extras === 'shrine' ? -px(3) * castK : 0);
+  // weapon-arm raises: swing strike / cast / talk gesture / potion lift
+  const raise = strikeK * px(2) + castK * px(3) + talkK * px(2) + (drinking ? px(2) : 0);
+  const lArmY = weaponArm === 'L' ? lArmYBase - raise : lArmYBase;
+  const rArmY = weaponArm === 'R' ? rArmYBase - raise : rArmYBase;
+  const armOut = dead ? Math.round(px(2) * fallK) : Math.round(hurtK * px(1));
+  const armH = Math.max(2, px(4) - px(fallK));
+  const armSwingX = o.moving && !dead ? armSwing * fx * 0.25 * s : 0;
+  const lArmX = cx - px(hw) - px(2) - armOut + lx * 0.3 + armSwingX;
+  const rArmX = cx + px(hw) + armOut + lx * 0.6 - armSwingX;
+  const drawArm = (which: 'L' | 'R', behind: boolean): void => {
+    const isL = which === 'L';
+    const ax = isL ? lArmX : rArmX;
+    const ay = isL ? lArmY : rArmY;
+    const isWeapon = (which === weaponArm);
+    const h = isWeapon ? armH + raise * 0.4 : armH;
+    R(ctx, ax, ay, px(2), h, flash ?? OUTLINE);
+    R(ctx, ax, ay, px(2), Math.max(1, h - 1), flash ?? col.armor);
+    R(ctx, ax, ay + h - 1, px(2), 1, flash ?? col.skin);
+    // NW key: arm top lift (near brighter); far limbs slightly dimmed = depth
+    if (!flash) {
+      ctx.save();
+      ctx.globalAlpha = behind ? 0.2 : 0.45;
+      R(ctx, ax, ay, px(2), 1, C.MIST);
+      ctx.restore();
+      if (behind) {
+        ctx.save();
+        ctx.globalAlpha = 0.18;
+        R(ctx, ax, ay, px(2), h, C.DEEP);
+        ctx.restore();
+      }
+    }
+  };
+  // far arm behind torso (occluded at shoulder = volume)
+  if (proj.farArm === 'L') drawArm('L', true);
+  else if (proj.farArm === 'R') drawArm('R', true);
+  // torso
   R(ctx, cx - px(hw) - 1 + lx * 0.5, torsoY, px(hw * 2) + 2, torsoH, flash ?? OUTLINE);
   R(ctx, cx - px(hw) + lx * 0.5, torsoY + 1, px(hw * 2), Math.max(1, torsoH - 2), flash ?? col.armor);
   // belt trim
   R(ctx, cx - px(hw) + lx * 0.5, torsoY + torsoH - 2, px(hw * 2), 1, flash ?? col.trim);
+  // NW key light: top-left lift + bottom-right shade + armor/metal specular
+  if (!flash) {
+    R(ctx, cx - px(hw) + lx * 0.5, torsoY + 1, px(hw * 2), 1, C.MIST);
+    ctx.save();
+    ctx.globalAlpha = 0.28;
+    R(ctx, cx + px(hw) - 1 + lx * 0.5, torsoY + 1, 1, Math.max(1, torsoH - 2), C.DEEP);
+    R(ctx, cx - px(hw) + lx * 0.5, torsoY + torsoH - 3, px(hw * 2), 1, C.DEEP);
+    ctx.restore();
+    if (extras === 'knight' || extras === 'guard' || extras === 'watcher') {
+      R(ctx, cx - px(hw) + lx * 0.5 + 1, torsoY + 2, 1.5, 1.5, C.BONE);
+      R(ctx, cx - px(hw) + lx * 0.5 + 1, torsoY + 4, 1, 1, C.FROST);
+    } else if (extras === 'shrine' || extras === 'arcanist' || extras === 'robe') {
+      R(ctx, cx - px(hw) + lx * 0.5 + 1, torsoY + 2, 1, 2, C.GOLD);
+    }
+  }
+  // near arm(s) front
+  if (proj.farArm === 'L') drawArm('R', false);
+  else if (proj.farArm === 'R') drawArm('L', false);
+  else { drawArm('L', false); drawArm('R', false); }
 
-  // ================= arms =================
-  const armBaseY = torsoY + 1;
-  const lArmY = armBaseY + (o.moving ? armSwing * 0.5 * s : 0) + (casting && extras === 'shrine' ? -px(3) * castK : 0);
-  let rArmY = armBaseY - (o.moving ? armSwing * 0.5 * s : 0) + (casting && extras === 'shrine' ? -px(3) * castK : 0);
-  // weapon-arm raises: swing strike / cast / talk gesture / potion lift
-  const raise = strikeK * px(2) + castK * px(3) + talkK * px(2) + (drinking ? px(2) : 0);
-  rArmY -= raise;
-  const armOut = dead ? Math.round(px(2) * fallK) : Math.round(hurtK * px(1));
-  const armH = Math.max(2, px(4) - px(fallK));
-  // left arm
-  R(ctx, cx - px(hw) - px(2) - armOut + lx * 0.3, lArmY, px(2), armH, flash ?? OUTLINE);
-  R(ctx, cx - px(hw) - px(2) - armOut + lx * 0.3, lArmY, px(2), Math.max(1, armH - 1), flash ?? col.armor);
-  R(ctx, cx - px(hw) - px(2) - armOut + lx * 0.3, lArmY + armH - 1, px(2), 1, flash ?? col.skin);
-  // right (weapon) arm
-  const rArmX = cx + px(hw) + armOut + lx * 0.6;
-  R(ctx, rArmX, rArmY, px(2), armH + raise * 0.4, flash ?? OUTLINE);
-  R(ctx, rArmX, rArmY, px(2), Math.max(1, armH - 1 + raise * 0.4), flash ?? col.armor);
-  R(ctx, rArmX, rArmY + armH - 1 + raise * 0.4, px(2), 1, flash ?? col.skin);
-
-  // ================= head =================
+  // ================= head (8-way: front/back/side/3-4 + NW light) =================
   const nod = talkK > 0 ? Math.sin(talkK * 12) * talkK * px(1) : 0;
   const drinkTilt = drinking && potionT > 0.3 && potionT < 0.75 ? -px(1) : 0;
   const slumpX = dead ? fallK * px(3) : 0;
   const slumpY = dead ? fallK * px(2) : nod;
-  const headX = cx + side * px(1) + lx * 0.7 + slumpX;
+  const headX = cx + side * px(1.2) + lx * 0.7 + slumpX;
   const headY = top + px(1) + ly * 0.5 + slumpY + drinkTilt;
-  const headW = px(8);
+  const headW = px(8) * (isSideView ? 0.86 : diagonal ? 0.93 : 1);
   const headH = Math.max(3, px(7) - px(fallK * 2));
   R(ctx, headX - headW / 2, headY, headW, headH, flash ?? OUTLINE);
+  // NW key: head top-left lift (volume even with post OFF)
+  if (!flash) {
+    R(ctx, headX - headW / 2, headY, headW, 1, C.FROST);
+    R(ctx, headX - headW / 2, headY, 1, headH, C.MIST);
+  }
   if (up) {
+    // back view (N + back 3/4 NW/NE): hair-dominant
     R(ctx, headX - px(3), headY + 1, px(6), Math.max(1, headH - 2), flash ?? col.hair);
-  } else {
-    R(ctx, headX - px(3), headY + 1, px(6), Math.max(1, headH - 2), flash ?? col.skin);
-    // eyes: squeezed when hurt, dead (blood) when fallen
-    const ex = side * px(1);
+    if (diagonal && !dead) {
+      // back 3/4: sliver of near cheek for depth (no eyes = facing away reads)
+      const cheekX = side < 0 ? headX - headW / 2 : headX + headW / 2 - 2 * s;
+      R(ctx, cheekX, headY + px(3), 2 * s, px(2), flash ?? col.skin);
+    }
     if (dead) {
-      R(ctx, headX - px(2) + ex, headY + px(3), px(1), px(1), flash ?? C.BLOOD);
-      R(ctx, headX + px(1) + ex, headY + px(3), px(1), px(1), flash ?? C.BLOOD);
+      R(ctx, headX - px(2), headY + px(3), px(1), px(1), flash ?? C.BLOOD);
+      R(ctx, headX + px(1), headY + px(3), px(1), px(1), flash ?? C.BLOOD);
+    }
+  } else if (isSideView) {
+    // profile (W/E): face + single front eye + nose + hair back
+    R(ctx, headX - px(3), headY + 1, px(6), Math.max(1, headH - 2), flash ?? col.skin);
+    const frontDir = faceMode === 'sideL' ? -1 : 1;
+    // hair back half
+    if (frontDir < 0) R(ctx, headX + px(1), headY + 1, px(2), Math.max(1, headH - 2), flash ?? col.hair);
+    else R(ctx, headX - px(3), headY + 1, px(2), Math.max(1, headH - 2), flash ?? col.hair);
+    // front eye (squeezed when hurt, blood when dead)
+    const eyeX = headX + frontDir * px(1.2) - 0.5 * s;
+    if (dead) R(ctx, eyeX, headY + px(3), px(1), px(1), flash ?? C.BLOOD);
+    else if (hurtK > 0.5) R(ctx, eyeX, headY + px(4), px(1), 1, flash ?? OUTLINE);
+    else R(ctx, eyeX, headY + px(3), px(1), px(2), flash ?? OUTLINE);
+    // nose bump on front edge
+    if (!dead) R(ctx, headX + frontDir * (headW / 2) - (frontDir > 0 ? 0 : 1 * s), headY + px(4), 1 * s, 1.5 * s, flash ?? col.skin);
+  } else {
+    // front + front 3/4 (S, SW/SE): two eyes offset, far eye narrower for 3/4
+    R(ctx, headX - px(3), headY + 1, px(6), Math.max(1, headH - 2), flash ?? col.skin);
+    const ex = side * px(1.2);
+    const farNarrow = diagonal ? 0.75 : 1;
+    // far eye = opposite side (SW far=right/east, SE far=left/west)
+    const leftW = side < -0.3 ? px(1) : side > 0.3 ? px(1) * farNarrow : px(1);
+    const rightW = side > 0.3 ? px(1) : side < -0.3 ? px(1) * farNarrow : px(1);
+    if (dead) {
+      R(ctx, headX - px(2) + ex, headY + px(3), leftW, px(1), flash ?? C.BLOOD);
+      R(ctx, headX + px(1) + ex, headY + px(3), rightW, px(1), flash ?? C.BLOOD);
     } else if (hurtK > 0.5) {
-      R(ctx, headX - px(2) + ex, headY + px(4), px(1), 1, flash ?? OUTLINE);
-      R(ctx, headX + px(1) + ex, headY + px(4), px(1), 1, flash ?? OUTLINE);
+      R(ctx, headX - px(2) + ex, headY + px(4), leftW, 1, flash ?? OUTLINE);
+      R(ctx, headX + px(1) + ex, headY + px(4), rightW, 1, flash ?? OUTLINE);
     } else {
-      R(ctx, headX - px(2) + ex, headY + px(3), px(1), px(2), flash ?? OUTLINE);
-      R(ctx, headX + px(1) + ex, headY + px(3), px(1), px(2), flash ?? OUTLINE);
+      R(ctx, headX - px(2) + ex, headY + px(3), leftW, px(2), flash ?? OUTLINE);
+      R(ctx, headX + px(1) + ex, headY + px(3), rightW, px(2), flash ?? OUTLINE);
+      // catchlight for 3/4 near eye (bloom-friendly micro-specular)
+      if (diagonal) R(ctx, headX + (side < 0 ? -px(2) : px(1)) + ex, headY + px(3), 1, 1, C.BONE);
     }
   }
-  // hair cap
+  // hair cap (foreshortened + NW highlight)
   R(ctx, headX - headW / 2, headY - px(1), headW, px(2), flash ?? col.hair);
   if (!up && !dead) R(ctx, headX - px(3), headY, px(6), 1, flash ?? col.hair);
+  if (!flash && !dead) R(ctx, headX - headW / 2, headY - px(1), headW * 0.5, 1, C.FROST);
 
-  // ================= weapon =================
-  // hand anchor follows the raised weapon arm
-  const handSide = side <= 0 ? 1 : -1;
-  const hx = cx + handSide * px(hw + 2) + lx * 0.8;
-  const hy = rArmY + armH * 0.5;
+  // ================= weapon (IK tip-matched for VFX trails + bloom) =================
+  // hand anchor: drawn weapon-arm hand (8-way near/visible side)
+  const wArmX = weaponArm === 'L' ? lArmX : rArmX;
+  const wArmY = weaponArm === 'L' ? lArmY : rArmY;
+  const hx = wArmX + px(1) + lx * 0.2;
+  const hy = wArmY + armH * 0.5 + raise * 0.2;
   const bladeLen = px(sil.bladeLen);
   const bladeW = Math.max(1.5, px(sil.bladeW) * 0.7);
   const showCudgel = extras === 'none' && (swinging || casting);
-  if (sil.staff) {
-    // ---- staff ----
+  const hideWeapon = dead && fallK >= 0.5;
+  // IK tip (rig-computed shoulder→elbow→wrist chain, VFX trail anchor, emissive)
+  const tipRig = rigPose.weaponTip;
+  const shaftTo = (tx: number, ty: number, w: number, outline: string, fill: string): { tx: number; ty: number } => {
+    if (!Number.isFinite(tx) || !Number.isFinite(ty)) return { tx: hx, ty: hy };
+    const ang = Math.atan2(ty - hy, tx - hx);
+    const len = Math.max(2, Math.hypot(tx - hx, ty - hy));
+    return shaft(ctx, hx, hy, ang, len, w, outline, fill);
+  };
+  if (!hideWeapon && sil.staff) {
+    // ---- staff (hand→IK tip + flaring gem for bloom) ----
     if (swinging || casting || windupK > 0.05) {
-      const base = facingAngle(o.facing);
-      let ang: number;
-      let lift = 0;
-      if (casting) {
-        // raised overhead, gem flaring at apex
-        ang = -Math.PI / 2 + side * 0.2;
-        lift = (4 + castK * 3) * s;
-      } else if (windupK > 0.05) {
-        ang = -Math.PI / 2 + side * 0.15;
-        lift = windupK * 5 * s;
-      } else {
-        ang = base + swingAngle(profile, swingT);
-      }
-      const tip = shaft(ctx, hx, hy - lift, ang, bladeLen, bladeW, flash ?? OUTLINE, flash ?? C.EMBER);
+      shaftTo(tipRig.x, tipRig.y, bladeW, flash ?? OUTLINE, flash ?? C.EMBER);
       const gemC = extras === 'shrine' ? C.GOLD : C.MIST;
       const flare = casting ? castK : strikeK;
       const gs = (3 + flare * 2) * s;
-      R(ctx, tip.tx - gs / 2, tip.ty - gs / 2, gs, gs, flash ?? gemC);
-      R(ctx, tip.tx - s, tip.ty - s, 2 * s, 2 * s, flash ?? C.BONE);
+      R(ctx, tipRig.x - gs / 2, tipRig.y - gs / 2, gs, gs, flash ?? gemC);
+      R(ctx, tipRig.x - s, tipRig.y - s, 2 * s, 2 * s, flash ?? C.BONE);
+      if (flare > 0.6) R(ctx, tipRig.x - 0.5 * s, tipRig.y - 0.5 * s, 1.5 * s, 1.5 * s, C.BONE);
     } else {
-      // rest: vertical staff + gem
-      R(ctx, hx - px(1), hy - px(8), px(2), px(12), flash ?? OUTLINE);
-      R(ctx, hx, hy - px(8), 1, px(12), flash ?? C.EMBER);
+      // rest: hand→IK tip (blade up) + gem
+      shaftTo(tipRig.x, tipRig.y, bladeW, flash ?? OUTLINE, flash ?? C.EMBER);
       const gemC = extras === 'shrine' ? C.GOLD : C.MIST;
-      R(ctx, hx - px(1), hy - px(10), px(3), px(3), flash ?? gemC);
-      R(ctx, hx, hy - px(9), 1, 1, flash ?? C.BONE);
+      R(ctx, tipRig.x - px(1), tipRig.y - px(1), px(3), px(3), flash ?? gemC);
+      R(ctx, tipRig.x, tipRig.y - 0.5 * s, 1, 1, flash ?? C.BONE);
     }
-  } else if (extras !== 'none' || showCudgel) {
-    // ---- blade / cudgel ----
+  } else if (!hideWeapon && (extras !== 'none' || showCudgel)) {
+    // ---- blade / cudgel (hand→IK tip, hot core for bloom) ----
     const cudgel = extras === 'none';
-    const len = cudgel ? px(6) : bladeLen;
     if (swinging) {
-      const base = facingAngle(o.facing);
-      const ang = base + swingAngle(profile, swingT);
-      // blader skill echo: ghost second arc
+      // blader skill echo: ghost second arc (legacy angle, no trail)
       if (profile === 'blader' && casting) {
-        const echo = shaft(ctx, hx - 3 * s, hy, ang - 0.6, len, bladeW, C.MIST, C.MIST);
+        const base = facingAngle(o.facing as SimFacing);
+        const ang = base + swingAngle(profile, swingT);
+        const echo = shaft(ctx, hx - 3 * s, hy, ang - 0.6, cudgel ? px(6) : bladeLen, bladeW, C.MIST, C.MIST);
         R(ctx, echo.tx - 1, echo.ty - 1, 2, 2, C.FROST);
       }
       const hot = swingT > 0.2 && swingT < 0.8;
-      const tip = shaft(ctx, hx, hy, ang, len, bladeW, flash ?? OUTLINE, flash ?? (hot || casting ? C.BONE : C.FROST));
-      if (hot || casting) R(ctx, tip.tx - 1, tip.ty - 1, 2.5, 2.5, flash ?? C.BONE);
-      // guard at hand
+      shaftTo(tipRig.x, tipRig.y, bladeW, flash ?? OUTLINE, flash ?? (hot || casting ? C.BONE : C.FROST));
+      if (hot || casting) {
+        R(ctx, tipRig.x - 1, tipRig.y - 1, 2.5, 2.5, flash ?? C.BONE);
+        R(ctx, tipRig.x - 0.5, tipRig.y - 0.5, 1.5, 1.5, C.BONE);
+      } else {
+        R(ctx, tipRig.x - 0.75, tipRig.y - 0.75, 1.5, 1.5, flash ?? C.BONE);
+      }
+      // guard at hand + NW specular on edge
       R(ctx, hx - px(2), hy - 1, px(4), 2, flash ?? (cudgel ? C.EMBER : col.trim));
+      if (!flash && !cudgel) R(ctx, hx - px(1), hy - 1, 2, 1, C.FROST);
     } else if (windupK > 0.05) {
-      // telegraph: blade raised high, still vertical (reads the windup)
-      const lift = windupK * (profile === 'watcher' ? 7 : 4) * s;
-      R(ctx, hx - bladeW / 2 - 0.5, hy - len - lift, bladeW + 1, len, flash ?? OUTLINE);
-      R(ctx, hx - bladeW / 2, hy - len - lift, bladeW, len, flash ?? C.FROST);
-      if (windupK > 0.6) R(ctx, hx - 1, hy - len - lift, 2, 3, flash ?? C.BONE);
+      // telegraph: hand→IK tip (raised high) + hot core when charged
+      shaftTo(tipRig.x, tipRig.y, bladeW, flash ?? OUTLINE, flash ?? C.FROST);
+      if (windupK > 0.6) R(ctx, tipRig.x - 1, tipRig.y - 1, 2, 3, flash ?? C.BONE);
+      else R(ctx, tipRig.x - 0.75, tipRig.y - 0.75, 1.5, 1.5, flash ?? C.BONE);
     } else if (dashK > 0.05) {
-      // dash: blade swept back + speed lines
-      const back = facingAngle(o.facing) + Math.PI * 0.8;
-      shaft(ctx, hx, hy, back, len, bladeW, flash ?? OUTLINE, flash ?? C.FROST);
+      // dash: hand→IK tip (swept back) + speed lines
+      shaftTo(tipRig.x, tipRig.y, bladeW, flash ?? OUTLINE, flash ?? C.FROST);
+      R(ctx, tipRig.x - 0.75, tipRig.y - 0.75, 1.5, 1.5, flash ?? C.BONE);
       R(ctx, hx - fx * 10 * s - 4, hy - 3, 6, 1.5, C.MIST);
       R(ctx, hx - fx * 12 * s - 4, hy + 1, 8, 1.5, C.FROST);
     } else if (casting) {
-      // blade cast (blader triple): blade up, edge flashing
-      R(ctx, hx - bladeW / 2 - 0.5, hy - len - castK * 3 * s, bladeW + 1, len, flash ?? OUTLINE);
-      R(ctx, hx - bladeW / 2, hy - len - castK * 3 * s, bladeW, len, flash ?? C.BONE);
+      // blade cast (blader triple): hand→IK tip (up) + flashing edge
+      shaftTo(tipRig.x, tipRig.y, bladeW, flash ?? OUTLINE, flash ?? C.BONE);
+      R(ctx, tipRig.x - 1, tipRig.y - 1, 2.5, 2.5, flash ?? C.BONE);
     } else if (!dead) {
-      // rest: blade up
-      R(ctx, hx - bladeW / 2 - 0.5, hy - len, bladeW + 1, len, flash ?? OUTLINE);
-      R(ctx, hx - bladeW / 2, hy - len + 1, bladeW, len - 1, flash ?? (cudgel ? C.EMBER : C.FROST));
+      // rest: hand→IK tip (blade up) + trim guard + micro-specular
+      shaftTo(tipRig.x, tipRig.y, bladeW, flash ?? OUTLINE, flash ?? (cudgel ? C.EMBER : C.FROST));
+      R(ctx, tipRig.x - 0.75, tipRig.y - 0.75, 1.5, 1.5, flash ?? C.BONE);
       R(ctx, hx - px(2), hy - 1, px(4), 1.5, flash ?? (cudgel ? C.SAND : col.trim));
     }
   }
@@ -379,31 +518,51 @@ export function drawHumanoid(
     }
   }
 
-  // ================= job extras =================
+  // ================= job extras (8-way) =================
   if (extras === 'knight' || extras === 'guard') {
     R(ctx, headX - px(1), headY - px(3), px(2), px(2), flash ?? C.FLAME);
     const padW = px(3) + (extras === 'knight' ? s : 0);
     R(ctx, cx - px(hw) - padW + lx * 0.5, torsoY - 1, padW, px(2), flash ?? col.trim);
     R(ctx, cx + px(hw) - s + lx * 0.5, torsoY - 1, padW, px(2), flash ?? col.trim);
-    // shield on off-hand (knight's reads bigger)
+    // NW specular on pads (armor/metal)
+    if (!flash) {
+      R(ctx, cx - px(hw) - padW + lx * 0.5, torsoY - 1, padW, 1, C.FROST);
+      R(ctx, cx + px(hw) - s + lx * 0.5, torsoY - 1, padW, 1, C.FROST);
+    }
+    // shield on off-hand (opposite weaponArm = anatomically correct, drawn front)
     const sh = sil.shield || 1;
-    const sx = side <= 0 ? cx - px(hw) - px(4) : cx + px(hw) + px(1);
+    const shieldLeft = weaponArm === 'R';
+    const sx = shieldLeft ? cx - px(hw) - px(4) : cx + px(hw) + px(1);
     R(ctx, sx, armBaseY - px(1), px(3) * sh, px(6) * sh, flash ?? OUTLINE);
     R(ctx, sx, armBaseY - px(1), px(2) * sh, px(5) * sh, flash ?? C.SLATE);
     R(ctx, sx, armBaseY + px(1), px(2) * sh, 1, flash ?? C.GOLD);
+    if (!flash) R(ctx, sx, armBaseY - px(1), px(2) * sh, 1, C.FROST);
   } else if (extras === 'watcher') {
     // pauldrons (drop as it dies) + visor slit handled below with pose
     const drop = fallK * px(3);
     R(ctx, cx - px(hw) - px(4) + lx * 0.5, torsoY - 1 + drop, px(4), px(3), flash ?? C.DEEP);
     R(ctx, cx + px(hw) + lx * 0.5, torsoY - 1 + drop, px(4), px(3), flash ?? C.DEEP);
+    if (!flash) {
+      R(ctx, cx - px(hw) - px(4) + lx * 0.5, torsoY - 1 + drop, px(4), 1, C.MIST);
+      R(ctx, cx + px(hw) + lx * 0.5, torsoY - 1 + drop, px(4), 1, C.MIST);
+    }
     R(ctx, headX - px(1), headY - px(3), px(2), px(2), flash ?? C.FLAME);
     if (!up) {
       const shake = windupK > 0.5 ? ((Math.floor(o.phase * 9) % 2 === 0 ? 1 : -1) * windupK * s) : 0;
       const visor = dead ? (fallK < 0.5 ? C.BLOOD : C.VOID) : windupK > 0.7 ? C.BONE : windupK > 0.05 ? C.GOLD : C.FLAME;
-      R(ctx, headX - px(3) + shake, headY + px(3), px(6), Math.max(1, px(1.4)), flash ?? visor);
+      // 8-way visor: side profile narrow + front offset, 3/4 foreshortened
+      const visW = isSideView ? px(3) : diagonal ? px(5) : px(6);
+      const visX = isSideView
+        ? headX + (faceMode === 'sideL' ? -px(2.5) : px(0.5)) + shake
+        : headX - visW / 2 + side * px(0.8) + shake;
+      R(ctx, visX, headY + px(3), visW, Math.max(1, px(1.4)), flash ?? visor);
       if (!dead) {
-        R(ctx, headX - px(2) + shake, headY + px(3), px(4), Math.max(1, px(1.4)), flash ?? C.GOLD);
-        R(ctx, headX - px(1) + shake, headY + px(3), px(2), 1, C.BONE);
+        const coreW = isSideView ? px(2) : px(4) * (diagonal ? 0.85 : 1);
+        const coreX = isSideView
+          ? headX + (faceMode === 'sideL' ? -px(2) : px(0)) + shake
+          : headX - coreW / 2 + side * px(0.8) + shake;
+        R(ctx, coreX, headY + px(3), coreW, Math.max(1, px(1.4)), flash ?? C.GOLD);
+        R(ctx, coreX + coreW / 2 - px(1), headY + px(3), px(2), 1, C.BONE);
       }
     }
   } else if (extras === 'blader') {
@@ -464,14 +623,23 @@ export function drawEnemy(
   kind: EnemyKind,
   o: BodyOpts,
 ): void {
-  const pal = ENEMY_COLORS[kind];
-  const s = o.scale;
+  const pal = ENEMY_COLORS[kind] ?? { body: C.SLATE, dark: C.DEEP, glow: C.MIST };
+  const s = Number.isFinite(o.scale) && o.scale > 0 ? Math.max(0.4, Math.min(3, o.scale)) : 1;
   const px = (n: number): number => n * s;
   const flash = o.flash ? C.BONE : null;
-  const side = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
+  // True 8-way projection (diagonals = 3/4 view, foreshortened).
+  const proj = facingProjection(o.facing as SimFacing);
+  const side = proj.side;
+  const vert = proj.vert;
+  const diagonal = proj.diagonal;
+  const faceMode = proj.faceMode;
+  const fa8 = facingAngle(o.facing as SimFacing);
+  const fx = Math.cos(fa8);
+  const fy = Math.sin(fa8);
   const anim = o.anim ?? (o.moving ? 'move' : 'idle');
   const dead = anim === 'dead';
-  const fallK = dead ? Math.min(1, (o.deadT ?? 0.4) / (kind === 'watcher' ? 0.6 : 0.3)) : 0;
+  const _deadTE = Number.isFinite(o.deadT) ? (o.deadT as number) : 0.4;
+  const fallK = dead ? Math.min(1, _deadTE / (kind === 'watcher' ? 0.6 : 0.3)) : 0;
   const hurtK = o.hurtK ?? 0;
   const windupK = o.windupK ?? 0;
   const recoverK = o.recoverK ?? 0;
@@ -501,43 +669,47 @@ export function drawEnemy(
   }
 
   if (kind === 'slime') {
-    // ---- hop locomotion: stretch rising, squash on landing ----
+    // ---- hop locomotion: stretch rising, squash on landing (8-way) ----
     const hopping = o.moving && !dead;
     const hopPh = hopping ? Math.abs(Math.sin(o.phase)) : 0;
     const rising = hopping && Math.cos(o.phase) > 0;
     const yOff = -hopPh * px(4);
     const shake = windupK > 0.05 && !dead ? ((Math.floor(o.phase * 14) % 2 === 0 ? 1 : -1) * windupK * px(1)) : 0;
-    const lunge = !dead && o.facing !== 1 && o.facing !== 0 ? strikeK * side * px(4) : 0;
+    // 8-way lunge along facing (diagonals = 3/4, N/S = vertical)
+    const lungeX = !dead ? strikeK * fx * px(4) : 0;
+    const lungeY = !dead ? strikeK * fy * px(2) : 0;
     let sq = 0.15 + (!o.moving && !dead ? (Math.sin(o.phase * 1.5) * 0.5 + 0.5) * 0.2 : 0);
     if (hopping) sq += hopPh < 0.3 ? 0.4 : rising ? -0.18 : 0.12;
     sq += windupK * 0.3 + hurtK * 0.3 + fallK * 0.9;
     const w = px(11) + sq * px(7);
     const h = Math.max(2, px(8) - sq * px(6));
     drawShadow(ctx, o.x, o.y + 1, 6 * s, hopPh * 4);
-    const x0 = o.x - w / 2 + lx + lunge + shake;
-    const y0 = o.y - h + yOff;
+    const x0 = o.x - w / 2 + lx + lungeX + shake;
+    const y0 = o.y - h + yOff + lungeY * 0.5;
     R(ctx, x0 - 1, y0 - 1, w + 2, h + 2, flash ?? OUTLINE);
     R(ctx, x0, y0, w, h, flash ?? pal.body);
     R(ctx, x0 + 1, y0 + 1, w * 0.35, Math.max(1, h * 0.3), flash ?? pal.glow);
     if (!dead || fallK < 0.5) R(ctx, x0 + 2, y0 + 1, 3, 2, flash ?? C.BONE);
-    // eyes (squeezed when hurt, gone when popped)
+    // NW specular (bloom micro-catch) + top lift
+    if (!flash && (!dead || fallK < 0.5)) R(ctx, x0 + w * 0.6, y0 + 1, 1.5, 1, C.FROST);
+    // eyes (8-way offset: X by side, Y by vert = facing reads)
     const ex = side * px(2);
-    const ey = y0 + h * 0.45;
+    const ey = y0 + h * 0.45 + vert * px(1);
     if (!dead) {
       const eyeH = hurtK > 0.4 ? 1 : px(3);
-      R(ctx, o.x - px(3) + ex + lunge, ey, px(2), eyeH, flash ?? OUTLINE);
-      R(ctx, o.x + px(1) + ex + lunge, ey, px(2), eyeH, flash ?? OUTLINE);
+      R(ctx, o.x - px(3) + ex + lungeX, ey, px(2), eyeH, flash ?? OUTLINE);
+      R(ctx, o.x + px(1) + ex + lungeX, ey, px(2), eyeH, flash ?? OUTLINE);
     }
-    // attack maw + landing splat droplets
+    // attack maw (front edge toward facing) + landing splat droplets
     if (strikeK > 0.4 && !dead) {
-      R(ctx, o.x - px(2) + ex + lunge, y0 + h - 3, px(4), 2, flash ?? C.VOID);
+      R(ctx, o.x - px(2) + ex + lungeX + fx * px(1), y0 + h - 3 + fy * px(1), px(4), 2, flash ?? C.VOID);
     }
     if (dead && fallK > 0.3) {
       R(ctx, x0 - 4, o.y - 2, 3, 2, pal.body);
       R(ctx, x0 + w + 1, o.y - 2, 3, 2, pal.body);
     }
-    // crown nub (sinks as it pops)
-    if (!dead || fallK < 0.6) R(ctx, o.x - px(1) + lunge, y0 - px(2), px(2), px(2), flash ?? pal.dark);
+    // crown nub (sinks as it pops, 8-way offset)
+    if (!dead || fallK < 0.6) R(ctx, o.x - px(1) + lungeX * 0.5 + side * px(0.5), y0 - px(2), px(2), px(2), flash ?? pal.dark);
     if (o.dim > 0.25 && !o.flash) {
       ctx.save();
       ctx.globalAlpha = Math.min(0.5, (o.dim - 0.25) * 0.8);
@@ -545,73 +717,174 @@ export function drawEnemy(
       ctx.restore();
     }
   } else if (kind === 'wolf') {
-    // ---- gallop: diagonal leg pairs, body pitch, pounce ----
-    const dir = side === 0 ? 1 : side;
+    // ---- quadruped gallop: side/front/back + 3/4 (true 8-way, IK legs) ----
     const gallop = o.moving && !dead ? Math.sin(o.phase) : 0;
     const crouch = windupK * px(2);
     const pounce = strikeK;
-    const lungeX = dir * pounce * px(6) + lx;
     const pitch = gallop * px(1.2);
     const bodyDrop = dead ? px(3) * fallK : 0;
-    drawShadow(ctx, o.x, o.y + 1, 8 * s, pounce * 3);
-    const x0 = o.x - px(7) + lungeX;
-    const y0 = o.y - px(9) + pitch * 0.3 + crouch * 0.6 + bodyDrop - pounce * px(2);
-    // tail: wag idle, stream when running, tucked in windup
-    const wag = !o.moving && !dead ? Math.sin(o.phase * 2) * px(1.5) : 0;
-    const tailY = y0 + px(1) + (o.moving ? -px(1) : 0) + windupK * px(2) + wag;
-    const tailX = dir > 0 ? x0 - px(3) : x0 + px(14);
-    R(ctx, tailX, tailY, px(3), px(2), flash ?? pal.dark);
-    if (dead) {
-      // sprawled: flattened body, legs in the air, head down
-      const bw = px(15);
-      const bh = Math.max(2, px(7) - px(3) * fallK);
-      R(ctx, x0 - 1, y0 + px(2), bw, bh, flash ?? OUTLINE);
-      R(ctx, x0, y0 + px(2), bw - 1, Math.max(1, bh - 1), flash ?? pal.body);
-      for (let i = 0; i < 4; i++) {
-        const legX = x0 + px(2) + i * px(3.5);
-        R(ctx, legX, y0 - px(1) * fallK, px(2), px(3) * fallK + 1, flash ?? pal.dark);
+    const isSideWolf = faceMode === 'sideL' || faceMode === 'sideR';
+    const isFrontWolf = vert > 0.3; // S + front 3/4 (SE/SW)
+    if (isSideWolf) {
+      // ---- side view (E/W): body horizontal, head leads, diagonal leg pairs ----
+      const dir: number = side > 0 ? 1 : -1;
+      const lungeX = dir * pounce * px(6) + lx;
+      drawShadow(ctx, o.x, o.y + 1, 8 * s, pounce * 3);
+      const x0 = o.x - px(7) + lungeX;
+      const y0 = o.y - px(9) + pitch * 0.3 + crouch * 0.6 + bodyDrop - pounce * px(2);
+      const wag = !o.moving && !dead ? Math.sin(o.phase * 2) * px(1.5) : 0;
+      const tailY = y0 + px(1) + (o.moving ? -px(1) : 0) + windupK * px(2) + wag;
+      const tailX = dir > 0 ? x0 - px(3) : x0 + px(14);
+      R(ctx, tailX, tailY, px(3), px(2), flash ?? pal.dark);
+      if (dead) {
+        const bw = px(15);
+        const bh = Math.max(2, px(7) - px(3) * fallK);
+        R(ctx, x0 - 1, y0 + px(2), bw, bh, flash ?? OUTLINE);
+        R(ctx, x0, y0 + px(2), bw - 1, Math.max(1, bh - 1), flash ?? pal.body);
+        for (let i = 0; i < 4; i++) {
+          const legX = x0 + px(2) + i * px(3.5);
+          R(ctx, legX, y0 - px(1) * fallK, px(2), px(3) * fallK + 1, flash ?? pal.dark);
+        }
+        R(ctx, x0 + (dir > 0 ? bw - 2 : -3), y0 + px(3), px(4), px(3), flash ?? pal.body);
+        R(ctx, x0 + (dir > 0 ? bw - 1 : -2), y0 + px(4), 1.5, 1.5, flash ?? C.BLOOD);
+        return;
       }
-      R(ctx, x0 + (dir > 0 ? bw - 2 : -3), y0 + px(3), px(4), px(3), flash ?? pal.body);
-      R(ctx, x0 + (dir > 0 ? bw - 1 : -2), y0 + px(4), 1.5, 1.5, flash ?? C.BLOOD);
-      return;
+      R(ctx, x0 - 1, y0 - 1, px(15), px(7), flash ?? OUTLINE);
+      R(ctx, x0, y0, px(14), px(5), flash ?? pal.body);
+      R(ctx, x0, y0, px(14), 1, flash ?? pal.glow);
+      if (!flash) R(ctx, x0, y0, 3, 1, C.FROST);
+      const hx = (dir > 0 ? x0 + px(12) : x0 - px(4)) + dir * pounce * px(2);
+      const hy = y0 - px(4) - pitch * 0.5 - pounce * px(1);
+      R(ctx, hx - 1, hy - 1, px(7), px(7), flash ?? OUTLINE);
+      R(ctx, hx, hy, px(5), px(5), flash ?? pal.body);
+      R(ctx, hx + (dir > 0 ? px(1) : px(2)), hy - px(2), px(2), px(2), flash ?? pal.dark);
+      const snX = dir > 0 ? hx + px(5) : hx - px(2);
+      R(ctx, snX, hy + px(3), px(2), px(2), flash ?? pal.dark);
+      if (pounce > 0.45) {
+        R(ctx, snX, hy + px(5), px(2), 1, flash ?? C.BONE);
+        R(ctx, dir > 0 ? hx + px(4) : hx, hy + px(4), px(2), 1, flash ?? C.VOID);
+      }
+      const eyeW = windupK > 0.05 ? 2 : 1;
+      R(ctx, dir > 0 ? hx + px(3) : hx + px(1), hy + px(1), eyeW, windupK > 0.05 ? 2 : 1, flash ?? C.GOLD);
+      for (let i = 0; i < 4; i++) {
+        const diag = i % 2 === 0 ? gallop : -gallop;
+        const reach = i < 2 ? pounce * px(3) * dir : -pounce * px(2) * dir;
+        const legX = x0 + px(1) + i * px(4) + diag * px(1.2) + reach;
+        R(ctx, legX, o.y - px(4) + crouch * 0.5, px(2), px(4) - crouch * 0.5, flash ?? pal.dark);
+      }
+      void recoverK;
+    } else if (isFrontWolf) {
+      // ---- front view (S + front 3/4 SE/SW): head front, body foreshortened ----
+      const off = side * px(3); // 3/4 offset (S=0, SE/SW=±)
+      const lungeY = pounce * px(2.5);
+      const lungeX = side * pounce * px(3) + lx;
+      drawShadow(ctx, o.x, o.y + 1, 8 * s, pounce * 3);
+      const bw = diagonal ? px(10) : px(8);
+      const x0 = o.x - bw / 2 + off * 0.4 + lungeX * 0.5;
+      const y0 = o.y - px(10) + pitch * 0.3 + crouch * 0.6 + bodyDrop + lungeY * 0.4 - pounce * px(1);
+      // tail behind (up, north) wagging sideways
+      const wag = Math.sin(o.phase * 2) * px(1.2);
+      R(ctx, x0 + bw / 2 - px(1) + wag * 0.5, y0 - px(3), px(2), px(3), flash ?? pal.dark);
+      if (dead) {
+        R(ctx, x0 - 1, y0 + px(2), bw + 2, px(5), flash ?? OUTLINE);
+        R(ctx, x0, y0 + px(2), bw, px(4), flash ?? pal.body);
+        R(ctx, x0 + 1, y0 - px(1) * fallK, px(2), px(3) * fallK + 1, flash ?? pal.dark);
+        R(ctx, x0 + bw - px(3), y0 - px(1) * fallK, px(2), px(3) * fallK + 1, flash ?? pal.dark);
+        R(ctx, x0 + bw / 2 - px(2), y0 + px(4), px(4), px(2), flash ?? C.BLOOD);
+        return;
+      }
+      // back legs behind (up, darker, drawn first = depth)
+      const backY = o.y - px(5) + crouch * 0.5 - px(1);
+      R(ctx, x0 + 1 - gallop * px(0.8), backY, px(2), px(3), flash ?? pal.dark);
+      R(ctx, x0 + bw - px(3) + gallop * px(0.8), backY, px(2), px(3), flash ?? pal.dark);
+      // body foreshortened (short = facing viewer)
+      R(ctx, x0 - 1, y0 - 1, bw + 2, px(7), flash ?? OUTLINE);
+      R(ctx, x0, y0, bw, px(5), flash ?? pal.body);
+      R(ctx, x0, y0, bw, 1, flash ?? pal.glow);
+      if (!flash) R(ctx, x0, y0, 2, 1, C.FROST);
+      // head front (large, toward viewer) with 3/4 offset
+      const hx = o.x - px(3.5) + off + lungeX * 0.6;
+      const hy = y0 + px(1) - pitch * 0.4 + lungeY * 0.3;
+      R(ctx, hx - 1, hy - 1, px(7), px(7), flash ?? OUTLINE);
+      R(ctx, hx, hy, px(5) + 2 * s, px(5), flash ?? pal.body);
+      // ears top
+      R(ctx, hx + px(0.5), hy - px(2), px(2), px(2), flash ?? pal.dark);
+      R(ctx, hx + px(3.5), hy - px(2), px(2), px(2), flash ?? pal.dark);
+      // snout center-down (toward viewer) + jaw when pouncing
+      const snX = hx + px(2.5) + off * 0.3;
+      R(ctx, snX - px(1), hy + px(4), px(3), px(2), flash ?? pal.dark);
+      if (pounce > 0.45) {
+        R(ctx, snX - px(1), hy + px(6), px(3), 1, flash ?? C.BONE);
+        R(ctx, snX - px(1), hy + px(5), px(3), 1, flash ?? C.VOID);
+      }
+      // two front eyes (far narrower for 3/4, gold for bloom)
+      const eyeY = hy + px(1.5);
+      const lw = side < -0.3 ? 1.5 * s : side > 0.3 ? 1 * s : 1.5 * s;
+      const rw = side > 0.3 ? 1.5 * s : side < -0.3 ? 1 * s : 1.5 * s;
+      const eh = windupK > 0.05 ? 2 : 1.5 * s;
+      R(ctx, hx + px(1) + off * 0.2, eyeY, lw, eh, flash ?? C.GOLD);
+      R(ctx, hx + px(4) + off * 0.2, eyeY, rw, eh, flash ?? C.GOLD);
+      // front legs (near, front) alternating with gallop
+      const fY = o.y - px(4) + crouch * 0.5;
+      R(ctx, x0 + 1 + gallop * px(1), fY, px(2), px(4) - crouch * 0.5, flash ?? pal.dark);
+      R(ctx, x0 + bw - px(3) - gallop * px(1), fY, px(2), px(4) - crouch * 0.5, flash ?? pal.dark);
+      void recoverK;
+    } else {
+      // ---- back view (N + back 3/4 NE/NW): tail front, head back/small ----
+      const off = side * px(3);
+      const lungeY = -pounce * px(2.5);
+      const lungeX = side * pounce * px(3) + lx;
+      drawShadow(ctx, o.x, o.y + 1, 8 * s, pounce * 3);
+      const bw = diagonal ? px(10) : px(8);
+      const x0 = o.x - bw / 2 + off * 0.4 + lungeX * 0.5;
+      const y0 = o.y - px(10) + pitch * 0.3 + crouch * 0.6 + bodyDrop + lungeY * 0.3 - pounce * px(1);
+      // front legs far (up, behind, drawn first)
+      const farY = o.y - px(5) + crouch * 0.5 - px(1);
+      R(ctx, x0 + 1 + gallop * px(0.8), farY, px(2), px(3), flash ?? pal.dark);
+      R(ctx, x0 + bw - px(3) - gallop * px(0.8), farY, px(2), px(3), flash ?? pal.dark);
+      if (dead) {
+        R(ctx, x0 - 1, y0 + px(2), bw + 2, px(5), flash ?? OUTLINE);
+        R(ctx, x0, y0 + px(2), bw, px(4), flash ?? pal.body);
+        R(ctx, x0 + bw / 2 - px(2), y0 - px(1), px(4), px(2), flash ?? C.BLOOD);
+        return;
+      }
+      // body foreshortened (rear view)
+      R(ctx, x0 - 1, y0 - 1, bw + 2, px(7), flash ?? OUTLINE);
+      R(ctx, x0, y0, bw, px(5), flash ?? pal.body);
+      R(ctx, x0, y0, bw, 1, flash ?? pal.glow);
+      // head back (small, up, facing away) + ears; 3/4 peeks one eye
+      const hx = o.x - px(2.5) + off + lungeX * 0.6;
+      const hy = y0 - px(4) - pitch * 0.4 + lungeY * 0.3;
+      R(ctx, hx - 1, hy - 1, px(5), px(5), flash ?? OUTLINE);
+      R(ctx, hx, hy, px(5) - 1, px(4), flash ?? pal.body);
+      R(ctx, hx + 0.5 * s, hy - px(1.5), px(1.5), px(1.5), flash ?? pal.dark);
+      R(ctx, hx + px(3), hy - px(1.5), px(1.5), px(1.5), flash ?? pal.dark);
+      if (diagonal && !dead) {
+        // back 3/4: near cheek + peeking eye
+        const peekX = side < 0 ? hx - px(1) : hx + px(4);
+        R(ctx, peekX, hy + px(2), 1.5 * s, 1.5 * s, flash ?? C.GOLD);
+      }
+      // tail front (large, toward viewer, wagging) + hind legs near
+      const wag = Math.sin(o.phase * 2) * px(1.5);
+      const tailX = o.x - px(1.5) + off * 0.5 + wag * 0.6 + lungeX * 0.3;
+      R(ctx, tailX - 1, o.y - px(7) + crouch * 0.4, px(3) + 2, px(5), flash ?? OUTLINE);
+      R(ctx, tailX, o.y - px(7) + crouch * 0.4, px(3), px(4), flash ?? pal.dark);
+      if (!flash) R(ctx, tailX, o.y - px(7) + crouch * 0.4, px(3), 1, C.MIST);
+      const hY = o.y - px(4) + crouch * 0.5;
+      R(ctx, x0 + 1 - gallop * px(1), hY, px(2), px(4) - crouch * 0.5, flash ?? pal.dark);
+      R(ctx, x0 + bw - px(3) + gallop * px(1), hY, px(2), px(4) - crouch * 0.5, flash ?? pal.dark);
+      void recoverK;
     }
-    // body
-    R(ctx, x0 - 1, y0 - 1, px(15), px(7), flash ?? OUTLINE);
-    R(ctx, x0, y0, px(14), px(5), flash ?? pal.body);
-    R(ctx, x0, y0, px(14), 1, flash ?? pal.glow);
-    // head (bobs opposite the body, leads the pounce)
-    const hx = (dir > 0 ? x0 + px(12) : x0 - px(4)) + dir * pounce * px(2);
-    const hy = y0 - px(4) - pitch * 0.5 - pounce * px(1);
-    R(ctx, hx - 1, hy - 1, px(7), px(7), flash ?? OUTLINE);
-    R(ctx, hx, hy, px(5), px(5), flash ?? pal.body);
-    R(ctx, hx + (dir > 0 ? px(1) : px(2)), hy - px(2), px(2), px(2), flash ?? pal.dark);
-    // snout + jaw (teeth bared on pounce) + eye (wide in windup)
-    const snX = dir > 0 ? hx + px(5) : hx - px(2);
-    R(ctx, snX, hy + px(3), px(2), px(2), flash ?? pal.dark);
-    if (pounce > 0.45) {
-      R(ctx, snX, hy + px(5), px(2), 1, flash ?? C.BONE);
-      R(ctx, dir > 0 ? hx + px(4) : hx, hy + px(4), px(2), 1, flash ?? C.VOID);
-    }
-    const eyeW = windupK > 0.05 ? 2 : 1;
-    R(ctx, dir > 0 ? hx + px(3) : hx + px(1), hy + px(1), eyeW, windupK > 0.05 ? 2 : 1, flash ?? C.GOLD);
-    // legs: diagonal pairs alternate; pounce reaches forward
-    for (let i = 0; i < 4; i++) {
-      const diag = i % 2 === 0 ? gallop : -gallop;
-      const reach = i < 2 ? pounce * px(3) * dir : -pounce * px(2) * dir;
-      const legX = x0 + px(1) + i * px(4) + diag * px(1.2) + reach;
-      R(ctx, legX, o.y - px(4) + crouch * 0.5, px(2), px(4) - crouch * 0.5, flash ?? pal.dark);
-    }
-    void recoverK;
   } else if (kind === 'shade') {
-    // ---- hover glider: cloak wave, charge orb, dissolve ----
+    // ---- hover glider: cloak wave, charge orb, dissolve (8-way) ----
     const glide = o.moving && !dead ? Math.sin(o.phase * 2) : 0;
     const hover = (dead ? 0 : Math.sin(o.phase * 1.3) * px(1.5) + glide * px(0.8)) - fallK * px(8);
-    const fx = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
-    const lean = o.moving && !dead ? fx * px(2) : 0;
+    const leanX = o.moving && !dead ? fx * px(2) : 0;
+    const leanY = o.moving && !dead ? fy * px(1) : 0;
     const jitter = hurtK > 0.05 && !dead ? ((Math.floor(o.phase * 20) % 2 === 0 ? 1 : -1) * hurtK * px(1)) : 0;
     const shrink = 1 - fallK * 0.45;
-    const x0 = o.x + lean + lx * 0.5 + jitter;
-    const y0 = o.y - px(12) + hover;
+    const x0 = o.x + leanX + lx * 0.5 + jitter;
+    const y0 = o.y - px(12) + hover + leanY * 0.5;
     // cloak flares on strike, settles through recover, compresses on charge
     const flarePx = swingT >= 0 ? strikeK * px(2) : anim === 'attack' ? Math.max(0.2, 1 - recoverK) * px(1.5) : 0;
     const cw = Math.max(4, px(12) * shrink + flarePx - windupK * px(1));
@@ -621,35 +894,37 @@ export function drawEnemy(
     const wave = dead ? 0 : Math.sin(o.phase * 3) * px(1);
     R(ctx, x0 - px(4) * shrink + wave * 0.4, o.y - px(5) + hover, px(8) * shrink, px(5) * shrink, flash ?? pal.dark);
     R(ctx, x0 - px(2) * shrink, o.y - px(3) + hover, px(4) * shrink, Math.max(1, px(3) * shrink), flash ?? OUTLINE);
-    // cloak body (compresses while charging)
+    // cloak body (compresses while charging) + NW top lift
     R(ctx, x0 - cw / 2 - 1, y0 - 1, cw + 2, px(10) * shrink + 2, flash ?? OUTLINE);
     R(ctx, x0 - cw / 2, y0, cw, px(10) * shrink, flash ?? pal.body);
-    // hood
+    if (!flash) R(ctx, x0 - cw / 2, y0, cw, 1, C.MIST);
+    // hood (8-way offset)
     R(ctx, x0 - px(5) * shrink + side * px(1), y0 - px(3), px(10) * shrink, px(5), flash ?? OUTLINE);
     R(ctx, x0 - px(4) * shrink + side * px(1), y0 - px(2), px(8) * shrink, px(4), flash ?? pal.dark);
-    // eyes (swell while charging, fade while dissolving)
+    // eyes (8-way: X by side, Y by vert; swell while charging)
     if (!dead || fallK < 0.4) {
       const ex = side * px(1);
+      const eyOff = vert * px(0.6);
       const ew = (windupK > 0.05 ? 3 : 2) * s;
-      R(ctx, x0 - px(2) + ex, y0 + px(1), ew, s, flash ?? C.BONE);
-      R(ctx, x0 + px(1) + ex, y0 + px(1), ew, s, flash ?? C.BONE);
+      R(ctx, x0 - px(2) + ex, y0 + px(1) + eyOff, ew, s, flash ?? C.BONE);
+      R(ctx, x0 + px(1) + ex, y0 + px(1) + eyOff, ew, s, flash ?? C.BONE);
       if (windupK > 0.4) {
-        R(ctx, x0 - px(3) + ex, y0, px(3), px(3), C.FROST);
-        R(ctx, x0 + px(1) + ex, y0, px(3), px(3), C.FROST);
+        R(ctx, x0 - px(3) + ex, y0 + eyOff, px(3), px(3), C.FROST);
+        R(ctx, x0 + px(1) + ex, y0 + eyOff, px(3), px(3), C.FROST);
       }
     }
-    // charge orb grows in front during telegraph
+    // charge orb grows in front during telegraph (8-way: front = facing dir)
     if (windupK > 0.05 && !dead) {
       const orbR = (1.5 + windupK * 2.5) * s;
       const ox = x0 + fx * (px(8) + windupK * px(3));
-      const oy = y0 + px(5);
+      const oy = y0 + px(5) + fy * px(2);
       R(ctx, ox - orbR - 1, oy - orbR - 1, orbR * 2 + 2, orbR * 2 + 2, flash ?? OUTLINE);
       R(ctx, ox - orbR, oy - orbR, orbR * 2, orbR * 2, flash ?? C.MIST);
       R(ctx, ox - 1, oy - 1, 2.5, 2.5, flash ?? C.BONE);
     }
-    // recoil flare right after the bolt leaves
+    // recoil flare right after the bolt leaves (behind = opposite facing)
     if (swingT >= 0 && !dead) {
-      R(ctx, x0 - cw / 2 - 2 - fx * px(2), y0 + px(2), 2, px(6), flash ?? C.MIST);
+      R(ctx, x0 - cw / 2 - 2 - fx * px(2), y0 + px(2) - fy * px(1), 2, px(6), flash ?? C.MIST);
     }
     // dissolving wisps rise
     if (dead) {
@@ -683,9 +958,10 @@ export function drawNPC(
     drawHumanoid(ctx, o, { skin: C.SKIN, hair: C.EMBER, armor: C.EMBER, trim: C.GOLD, legs: C.SAND, boots: C.DEEP }, 'merchant');
   } else {
     drawHumanoid(ctx, o, { skin: C.SKIN, hair: C.BLOOD, armor: C.LEAF, trim: C.BONE, legs: C.MOSS, boots: C.DEEP }, 'none');
-    // headscarf (rides the breathe lift so it never floats)
+    // headscarf (8-way offset, rides the breathe lift so it never floats)
     const s = o.scale;
-    const side = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
+    const projN = facingProjection(o.facing as SimFacing);
+    const side = projN.side;
     const breathe = !o.moving ? (Math.sin(o.phase) * 0.5 + 0.5) * 0.8 * s : 0;
     const top = o.y - 17 * s - breathe;
     R(ctx, o.x - 4 * s + side * s, top - 1 * s, 8 * s, 2 * s, C.BONE);

@@ -2,7 +2,7 @@ import {
   ENEMIES, ITEMS, JOB_MODS, JOB_NAMES, JOB_SKILL, SHOP_STOCK,
   TEMPO, TILE, DAY_LENGTH, xpForLevel,
 } from './config';
-import { calcDamage, dist, facingAngle, facingFromVec, inArc } from './combat';
+import { calcDamage, dist, facingAngle, facingFromVec, inArc, toCameraRelative } from './combat';
 import { rollLoot } from './loot';
 import { World, mulberry32 } from './world';
 import type {
@@ -184,7 +184,8 @@ export class Sim {
   // ---------- main update ----------
 
   update(rawDt: number, input: SimInput): void {
-    const dt = Math.min(0.05, Math.max(0.0001, rawDt));
+    const safeDt = Number.isFinite(rawDt) ? rawDt : 1 / 60;
+    const dt = Math.min(0.05, Math.max(0.0001, safeDt));
     if (this.over) {
       this.updateFx(dt);
       return;
@@ -258,15 +259,19 @@ export class Sim {
       if (this.dashT <= 0) this.dashHit.clear();
     }
 
-    // movement
-    let mx = input.mx;
-    let my = input.my;
+    // movement (camera-relative; camera is axis-aligned today so this is
+    // identity, but diagonal input still maps to true 8-way facing).
+    let mx = Number.isFinite(input.mx) ? input.mx : 0;
+    let my = Number.isFinite(input.my) ? input.my : 0;
     const mag = Math.hypot(mx, my);
     if (mag > 1) {
       mx /= mag;
       my /= mag;
     }
     if (mag > 0.12 && this.dashT <= 0) {
+      const cam = toCameraRelative(mx, my, 0);
+      mx = Number.isFinite(cam.mx) ? cam.mx : 0;
+      my = Number.isFinite(cam.my) ? cam.my : 0;
       p.facing = facingFromVec(mx, my);
       const spd = p.stats.spd;
       this.world.moveCircle(p, mx * spd * dt, my * spd * dt, 5);
@@ -605,10 +610,10 @@ export class Sim {
 
       switch (e.ai) {
         case 'idle': {
-          // wander slowly
+          // wander slowly (true 8-way so idlers read diagonally too)
           if (e.stateT > 2.5) {
             e.stateT = 0;
-            e.facing = (Math.floor(this.rng() * 4) % 4) as Facing;
+            e.facing = (Math.floor(this.rng() * 8) % 8) as Facing;
           }
           if (this.rng() < dt * 0.9) {
             const a = facingAngle(e.facing);

@@ -53,8 +53,10 @@ export function loadGame(sim: Sim): boolean {
     if (!data || data.v !== 1 || !data.player) return false;
     sim.newGame();
     Object.assign(sim.player, data.player);
-    // sanitize
+    // sanitize (8-way facing: legacy 0..3 saves stay valid, clamp 0..7)
     const p = sim.player;
+    if (!Number.isFinite(p.facing) || (p.facing as number) < 0 || (p.facing as number) > 7) p.facing = 0;
+    else p.facing = Math.round(p.facing) as typeof p.facing;
     p.hp = Math.min(p.stats.maxHp, Math.max(1, p.hp));
     p.mp = Math.min(p.stats.maxMp, Math.max(0, p.mp));
     p.alive = true;

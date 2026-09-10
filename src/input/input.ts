@@ -1,4 +1,5 @@
-import type { SimInput } from '../sim/types';
+import { facingFromVec } from '../sim/combat';
+import type { Facing, SimInput } from '../sim/types';
 
 /** Pure builder — used by Input and by headless touch-simulation tests. */
 export function buildSimInput(
@@ -16,6 +17,19 @@ export function buildSimInput(
     potion: !!edges.potion,
   };
 }
+
+/**
+ * 8-way facing for a move vector (keyboard WASD/arrows + virtual joystick).
+ * Diagonals (|mx|>0.3 && |my|>0.3) map to NE/SE/SW/NW via 45-degree sectors.
+ */
+export function inputToFacing(mx: number, my: number): Facing {
+  if (!Number.isFinite(mx) || !Number.isFinite(my)) return 0;
+  if (Math.hypot(mx, my) < 0.12) return 0;
+  return facingFromVec(mx, my);
+}
+
+/** Alias. */
+export const moveVecToFacing = inputToFacing;
 
 /** Pure virtual joystick state (no DOM) — testable headlessly. */
 export class VirtualJoystick {

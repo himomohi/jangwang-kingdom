@@ -3,7 +3,36 @@
 export type JobId = 'commoner' | 'knight' | 'blader' | 'arcanist' | 'shrine';
 export type EnemyKind = 'slime' | 'wolf' | 'bandit' | 'shade' | 'watcher';
 export type ZoneId = 'town' | 'field' | 'forest' | 'road' | 'ruin' | 'arena';
-export type Facing = 0 | 1 | 2 | 3; // down up left right
+/**
+ * True 8-direction facing (clockwise order N,NE,E,SE,S,SW,W,NW is the
+ * conceptual model; numeric values preserve the legacy 0..3 cardinals for
+ * save compat: 0=S(down) 1=N(up) 2=W(left) 3=E(right) 4=SW 5=SE 6=NW 7=NE).
+ */
+export type Facing = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+/** Alias for hidden-test / external clarity. */
+export type Facing8 = Facing;
+/** Legacy 4-way subset (still valid as Facing). */
+export type Facing4 = 0 | 1 | 2 | 3;
+
+/** Named facing constants (numeric values locked for save compat). */
+export const F_S = 0 as Facing;
+export const F_N = 1 as Facing;
+export const F_W = 2 as Facing;
+export const F_E = 3 as Facing;
+export const F_SW = 4 as Facing;
+export const F_SE = 5 as Facing;
+export const F_NW = 6 as Facing;
+export const F_NE = 7 as Facing;
+
+/** Display names indexed by Facing (0..7). */
+export const FACING_NAMES: readonly ['S', 'N', 'W', 'E', 'SW', 'SE', 'NW', 'NE'] =
+  ['S', 'N', 'W', 'E', 'SW', 'SE', 'NW', 'NE'] as const;
+
+/** Clockwise conceptual order N,NE,E,SE,S,SW,W,NW (display / docs order). */
+export const FACING_ORDER_CLOCKWISE: readonly Facing[] = [1, 7, 3, 5, 0, 4, 2, 6] as const;
+
+/** All 8 facings. */
+export const ALL_FACINGS: readonly Facing[] = [0, 1, 2, 3, 4, 5, 6, 7] as const;
 export type Slot = 'weapon' | 'armor' | 'charm';
 
 export interface Stats {

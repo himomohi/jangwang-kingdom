@@ -1,10 +1,13 @@
 /** World renderer: Canvas2D tiles/entities + lighting + emissive FX.
  * Lighting: NW key light (top-left lift + tile edges), entity height shadows
- * (SE-offset via drawShadow height), town torch/point lights (lamps/braziers/
- * houses/pickups/elite), night cycle capped so silhouettes read with post OFF.
+ * (soft contact + SE-offset drop via drawShadow height), town torch/point
+ * lights (lamps/braziers/houses/pickups/elite), night cycle capped so
+ * silhouettes read with post OFF. Ground occlusion strengthened via
+ * Y-sorted tall occluders (trees/pillars/lamps/buildings) + ySortKey tiebreak.
  */
 import { C, PALETTE } from '../art/palette';
 import { enemyAnim, enemyStride, playerAnim, playerLocomotion } from '../art/anim';
+import { sampleWeaponTip, ySortKey } from '../art/rig';
 import {
   drawEnemy, drawFlowers, drawGrassTuft, drawHouse, drawLamp, drawNPC,
   drawPickup, drawPlayer, drawProjectile, drawRock, drawRuin, drawTree,
@@ -177,20 +180,55 @@ export class WorldRenderer {
     this.drawDecorBelow(sim, t);
     this.drawPickups(sim, t);
 
-    // y-sorted draw list: buildings + npcs + enemies + player
+    // y-sorted draw list: tall occluders (trees/pillars/lamps/buildings)
+    // + npcs + enemies + player. Ground occlusion strengthened: tall
+    // decor participates in Y-sort (behind/in-front correctly), sorted by
+    // ySortKey (feet Y + X tiebreak) so overlaps never flicker.
     interface Item {
+      x: number;
       y: number;
       draw: () => void;
     }
     const items: Item[] = [];
     for (const b of world.buildings) {
+      const bx = (b.tx + b.tw / 2) * TILE;
       const by = (b.ty + b.th) * TILE;
-      if (!this.onScreen((b.tx + b.tw / 2) * TILE, by, 120)) continue;
+      if (!this.onScreen(bx, by, 120)) continue;
       items.push({
-        y: by,
+        x: bx, y: by,
         draw: () => {
           drawHouse(ctx, b.tx * TILE, b.ty * TILE, b.tw, b.th, b.roof, b.wall, b.sign);
           this.drawLabel((b.tx + b.tw / 2) * TILE, b.ty * TILE - 8, b.label, C.SAND);
+        },
+      });
+    }
+    // tall trees as Y-sorted occluders (canopy hides entities behind)
+    for (let ty = y0; ty <= y1; ty++) {
+      for (let tx = x0; tx <= x1; tx++) {
+        if (sim.world.tileAt(tx, ty) !== T_TREE) continue;
+        const dx = tx * TILE + 8;
+        const dy = ty * TILE + 15;
+        if (!this.onScreen(dx, dy, 30)) continue;
+        const variant = Math.floor(hash2(tx, ty) * 99);
+        items.push({
+          x: dx, y: dy,
+          draw: () => drawTree(ctx, dx, dy, variant),
+        });
+      }
+    }
+    // tall decor (pillars/lamps) as Y-sorted occluders
+    for (const d of sim.world.decor) {
+      if (d.kind !== 'pillar' && d.kind !== 'lamp') continue;
+      if (!this.onScreen(d.x, d.y, 40)) continue;
+      const dx = d.x;
+      const dy = d.y;
+      const variant = d.variant;
+      const kind = d.kind;
+      items.push({
+        x: dx, y: dy,
+        draw: () => {
+          if (kind === 'pillar') drawRuin(ctx, dx, dy, variant);
+          else drawLamp(ctx, dx, dy, t);
         },
       });
     }
@@ -198,7 +236,7 @@ export class WorldRenderer {
       if (!this.onScreen(n.x, n.y, 60)) continue;
       const a = this.animFor(`n${n.id}`, n.x, n.y, dt);
       items.push({
-        y: n.y,
+        x: n.x, y: n.y,
         draw: () => {
           drawNPC(ctx, n.kind, {
             x: n.x, y: n.y, facing: n.facing as Facing, phase: a.phase,
@@ -225,7 +263,7 @@ export class WorldRenderer {
       this.vfx.noteStride(e.uid, a.phase, moving && !e.dead, e.x, e.y, e.elite ? 1.7 : 1);
       const pose = enemyAnim(e, moving);
       items.push({
-        y: e.y,
+        x: e.x, y: e.y,
         draw: () => {
           ctx.save();
           if (e.dead) {
@@ -266,7 +304,7 @@ export class WorldRenderer {
       const flash = p.alive && (freshHit || (p.hurtCd > 0 && Math.floor(t * 10) % 2 === 0));
       const dashK = dashing ? Math.min(1, sim.dashT / TEMPO.dashDur) : 0;
       items.push({
-        y: p.y,
+        x: p.x, y: p.y,
         draw: () => {
           ctx.save();
           if (!p.alive) ctx.globalAlpha = Math.max(0.55, 1 - (p.deadT / TEMPO.playerDeadFade) * 0.45);
@@ -290,7 +328,7 @@ export class WorldRenderer {
         },
       });
     }
-    items.sort((m, n) => m.y - n.y);
+    items.sort((m, n) => ySortKey(m.x, m.y) - ySortKey(n.x, n.y));
     for (const it of items) it.draw();
 
     // projectiles
@@ -432,9 +470,12 @@ export class WorldRenderer {
             break;
           }
           case T_TREE: {
+            // ground only here; canopy drawn as Y-sorted occluder in items
             ctx.fillStyle = C.PINE;
             ctx.fillRect(px, py, TILE, TILE);
-            drawTree(ctx, px + 8, py + 15, Math.floor(h * 99));
+            ctx.fillStyle = 'rgba(201,216,232,0.05)';
+            ctx.fillRect(px, py, TILE, 1);
+            ctx.fillRect(px, py, 1, TILE);
             break;
           }
           case T_ROAD: {
@@ -556,14 +597,15 @@ export class WorldRenderer {
   }
 
   private drawDecorBelow(sim: Sim, t: number): void {
+    void t;
     const { ctx } = this;
+    // ground-level only (always below entities); tall pillar/lamp are
+    // Y-sorted occluders in items for correct ground occlusion.
     for (const d of sim.world.decor) {
       if (!this.onScreen(d.x, d.y, 40)) continue;
       if (d.kind === 'tuft') drawGrassTuft(ctx, d.x, d.y, d.variant);
       else if (d.kind === 'flowers') drawFlowers(ctx, d.x, d.y, d.variant);
       else if (d.kind === 'rock') drawRock(ctx, d.x, d.y, d.variant);
-      else if (d.kind === 'pillar') drawRuin(ctx, d.x, d.y, d.variant);
-      else if (d.kind === 'lamp') drawLamp(ctx, d.x, d.y, t);
     }
   }
 
@@ -614,10 +656,15 @@ export class WorldRenderer {
 
     const p = sim.player;
     hole(p.x, p.y - 8, 130 + (1 - dark) * 70, 0.95);
-    // weapon tip light while swinging
+    // weapon-tip light while swinging (IK tip, true 8-way, emissive for bloom)
     if (p.swingT >= 0 && p.alive) {
-      const fa = facingAngle(p.facing);
-      hole(p.x + Math.cos(fa) * 18, p.y - 8 + Math.sin(fa) * 18, 58, 0.7);
+      try {
+        const tip = sampleWeaponTip(p.x, p.y, p.facing, p.swingT, 1, p.job);
+        hole(tip.x, tip.y, 58, 0.7);
+      } catch {
+        const fa = facingAngle(p.facing);
+        hole(p.x + Math.cos(fa) * 18, p.y - 8 + Math.sin(fa) * 18, 58, 0.7);
+      }
     }
     if (p.shieldT > 0) hole(p.x, p.y - 8, 90, 0.6);
     for (const l of sim.world.lamps) {

@@ -9,6 +9,7 @@
 import { facingAngle } from '../sim/combat';
 import { TEMPO } from '../sim/config';
 import type { EnemyState, Facing, PlayerState } from '../sim/types';
+import { sampleWeaponTip as sampleWeaponTipIK } from './rig';
 
 export type PlayerAnim = 'dead' | 'potion' | 'skill' | 'attack' | 'hurt' | 'talk' | 'walk' | 'idle';
 export type EnemyAnim = 'dead' | 'hurt' | 'windup' | 'attack' | 'move' | 'idle';
@@ -202,10 +203,19 @@ export function swingAngle(kind: string, swingT: number): number {
 /**
  * Job-aware weapon tip in world px. Feeds slash-trail sampling (vfx) and
  * matches the drawn weapon arc so trails never detach from the blade.
+ * Primary: shoulder→elbow→wrist IK chain (rig.ts, true 8-way);
+ * fallback: legacy analytic arc (also 8-way via facingAngle).
  */
 export function weaponTip(
   x: number, y: number, facing: Facing, swingT: number, scale: number, kind = 'player',
 ): { x: number; y: number } {
+  try {
+    const job = kind === 'player' ? 'commoner' : kind;
+    const tip = sampleWeaponTipIK(x, y, facing, swingT, scale, job);
+    if (Number.isFinite(tip.x) && Number.isFinite(tip.y)) return tip;
+  } catch {
+    /* fall through to legacy arc */
+  }
   const cx = x;
   const cy = y - 9 * scale;
   const pr = swingProfile(kind);

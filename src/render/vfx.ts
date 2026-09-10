@@ -5,6 +5,7 @@
  */
 import { C } from '../art/palette';
 import { castFocus, strideFootfall, weaponTip } from '../art/anim';
+import { sampleWeaponTip } from '../art/rig';
 import { TEMPO } from '../sim/config';
 import type { Sim } from '../sim/game';
 import type { SimEvent } from '../sim/types';
@@ -356,9 +357,15 @@ export class VfxSystem {
     }
     this.prevPotionT = p.potionT;
 
-    // slash trails from job-aware weapon tip samples while swinging
+    // slash trails from IK shoulder→elbow→wrist tip samples (true 8-way).
+    // Primary: rig IK chain (matches drawn blade tip exactly); fallback: anim arc.
     if (p.alive && p.swingT >= 0) {
-      const tip = weaponTip(p.x, p.y, p.facing, p.swingT, 1, p.job);
+      let tip: { x: number; y: number };
+      try {
+        tip = sampleWeaponTip(p.x, p.y, p.facing, p.swingT, 1, p.job);
+      } catch {
+        tip = weaponTip(p.x, p.y, p.facing, p.swingT, 1, p.job);
+      }
       this.pushTrail('player', tip.x, tip.y, p.job);
     }
     // cast trails: blader spin + gem streaks
@@ -368,7 +375,12 @@ export class VfxSystem {
     }
     for (const e of sim.enemies) {
       if (e.dead || e.swingT < 0) continue;
-      const tip = weaponTip(e.x, e.y, e.facing, e.swingT, e.elite ? 1.7 : 1, e.kind);
+      let tip: { x: number; y: number };
+      try {
+        tip = sampleWeaponTip(e.x, e.y, e.facing, e.swingT, e.elite ? 1.7 : 1, e.kind);
+      } catch {
+        tip = weaponTip(e.x, e.y, e.facing, e.swingT, e.elite ? 1.7 : 1, e.kind);
+      }
       this.pushTrail(e.uid, tip.x, tip.y, e.kind);
     }
     // dash afterimages: sample center while dashing
