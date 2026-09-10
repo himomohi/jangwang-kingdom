@@ -1,0 +1,19 @@
+{
+  "name": "jangwang-kingdom",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "잔광왕국 — original top-down browser action RPG",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "smoke": "npx --yes tsx src/smoke.ts",
+    "deploy": "npm run build && gh-pages -d dist -b gh-pages"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.3.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.2.0"
+  }
+}
