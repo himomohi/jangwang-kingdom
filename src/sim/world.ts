@@ -120,8 +120,8 @@ export function buildWorld(seed = 0x7a6b): World {
   // Town yard
   fill(tiles, 28, 54, 40, 22, Tile.Dirt);
   fill(tiles, 32, 58, 32, 16, Tile.Floor);
-  fill(tiles, 40, 60, 16, 10, Tile.Rug);
-  fill(tiles, 46, 63, 5, 5, Tile.Floor);
+  fill(tiles, 40, 61, 16, 8, Tile.Floor);
+  fill(tiles, 46, 63, 5, 5, Tile.Path);
 
   // Town fence + gate
   for (let x = 28; x < 68; x++) {
@@ -166,9 +166,9 @@ export function buildWorld(seed = 0x7a6b): World {
         const cur = tiles[ty * MAP_W + tx]!;
         if (cur !== Tile.Grass && cur !== Tile.GrassTall && cur !== Tile.Dirt) continue;
         const roll = cr();
-        if (roll < 0.45) setTile(tiles, tx, ty, Tile.Tree);
-        else if (roll < 0.7) setTile(tiles, tx, ty, Tile.Flower);
-        else setTile(tiles, tx, ty, Tile.GrassTall);
+        if (roll < 0.22) setTile(tiles, tx, ty, Tile.Tree);
+        else if (roll < 0.4) setTile(tiles, tx, ty, Tile.Flower);
+        else if (roll < 0.7) setTile(tiles, tx, ty, Tile.GrassTall);
       }
     }
   }

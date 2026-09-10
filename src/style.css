@@ -28,6 +28,10 @@ body {
   user-select: none;
 }
 
+html {
+  translate: no;
+}
+
 #root {
   position: relative;
   width: 100%;

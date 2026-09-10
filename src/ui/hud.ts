@@ -121,7 +121,7 @@ export class Hud {
       return `<div id="overlay"><div class="panel">
         <h1>잔광이 흐려진다</h1>
         <p>숨이 끊겼다. 광장 우물가에서 다시 눈을 뜰 수 있다.</p>
-        <p><button type="button" data-act="revive">광장으로</button></p>
+        <p><button type="button" data-act="revive">광장으로 (Enter / R)</button></p>
       </div></div>`;
     }
     if (g.jobPick) {

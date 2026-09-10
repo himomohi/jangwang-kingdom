@@ -4,7 +4,7 @@ import type { Game } from "../sim/game";
 import { playerLook } from "../sim/game";
 import { ITEMS } from "../sim/items";
 import { MAP_H, MAP_W, TILE, INTERNAL_H, INTERNAL_W } from "../sim/types";
-import { tileAt } from "../sim/world";
+import { Tile, tileAt } from "../sim/world";
 import { cameraOrigin } from "./camera";
 
 export function drawWorld(ctx: CanvasRenderingContext2D, g: Game): void {
@@ -26,13 +26,28 @@ export function drawWorld(ctx: CanvasRenderingContext2D, g: Game): void {
     }
   }
 
-  // fountain mark
+  // roofs over walls
+  for (let ty = y0; ty < y1; ty++) {
+    for (let tx = x0; tx < x1; tx++) {
+      if (tileAt(g.world, tx, ty) !== Tile.Wall) continue;
+      const rx = Math.round(tx * TILE - ox);
+      const ry = Math.round(ty * TILE - oy - 6);
+      ctx.fillStyle = hexOf(2);
+      ctx.fillRect(rx - 1, ry, 18, 8);
+      ctx.fillStyle = hexOf(11);
+      ctx.fillRect(rx + 3, ry + 1, 10, 3);
+    }
+  }
+
+  // fountain
+  const fx = Math.round(48 * TILE + 1 - ox);
+  const fy = Math.round(64 * TILE + 1 - oy);
+  ctx.fillStyle = hexOf(3);
+  ctx.fillRect(fx, fy, 14, 14);
   ctx.fillStyle = hexOf(10);
-  const fx = Math.round(48 * TILE + 2 - ox);
-  const fy = Math.round(64 * TILE + 2 - oy);
-  ctx.fillRect(fx, fy, 12, 12);
+  ctx.fillRect(fx + 3, fy + 3, 8, 8);
   ctx.fillStyle = hexOf(15);
-  ctx.fillRect(fx + 4, fy + 4, 4, 4);
+  ctx.fillRect(fx + 6, fy + 5, 2, 4);
 
   for (const d of g.drops) {
     const kind = ITEMS[d.item].slot === "gold" ? "coin" : ITEMS[d.item].slot === "use" ? "gem" : "bag";
@@ -48,6 +63,10 @@ export function drawWorld(ctx: CanvasRenderingContext2D, g: Game): void {
       fn: () => {
         const s = npcSprite(n.id, (g.time * 3) | 0);
         ctx.drawImage(s, Math.round(n.x - 16 - ox), Math.round(n.y - 26 - oy));
+        ctx.fillStyle = hexOf(15);
+        ctx.font = "bold 7px 'Courier New', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(n.title, Math.round(n.x - ox), Math.round(n.y - 30 - oy));
       },
     });
   }
@@ -110,6 +129,12 @@ export function drawWorld(ctx: CanvasRenderingContext2D, g: Game): void {
   for (const f of g.floats) {
     ctx.fillStyle = hexOf(f.color);
     ctx.fillText(f.text, Math.round(f.x - ox), Math.round(f.y - oy));
+  }
+  if (g.hint && g.screen === "play") {
+    ctx.textAlign = "center";
+    ctx.fillStyle = hexOf(11);
+    ctx.font = "bold 9px 'Courier New', monospace";
+    ctx.fillText(g.hint, INTERNAL_W / 2, INTERNAL_H - 18);
   }
   ctx.textAlign = "left";
 }

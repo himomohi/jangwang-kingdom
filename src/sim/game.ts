@@ -147,6 +147,7 @@ export interface Game {
   uid: number;
   log: string[];
   dirtyUi: number;
+  hint: string;
 }
 
 const JOB_NAME: Record<JobId, string> = {
@@ -310,19 +311,19 @@ function spawnMobs(seed: number): Mob[] {
   const rng = mulberry32(hashSeed(seed ^ 0x51a1));
   const list: Mob[] = [];
   for (let i = 0; i < 7; i++) {
-    const x = (18 + irand(rng, 60)) * TILE + 8;
-    const y = (22 + irand(rng, 26)) * TILE + 8;
-    list.push(mob("slime", "들판 슬라임", x, y, { hp: 18, atk: 4, def: 0, xp: 8, speed: 28 }));
+    const x = (16 + irand(rng, 56)) * TILE + 8;
+    const y = (20 + irand(rng, 22)) * TILE + 8;
+    list.push(mob("slime", "들판 슬라임", x, y, { hp: 16, atk: 3, def: 0, xp: 8, speed: 26 }));
   }
   for (let i = 0; i < 3; i++) {
     const x = (10 + irand(rng, 16)) * TILE + 8;
     const y = (24 + irand(rng, 18)) * TILE + 8;
-    list.push(mob("wolf", "들늑대", x, y, { hp: 28, atk: 7, def: 1, xp: 14, speed: 42 }));
+    list.push(mob("wolf", "들늑대", x, y, { hp: 26, atk: 6, def: 1, xp: 14, speed: 40 }));
   }
   for (let i = 0; i < 3; i++) {
     const x = (44 + irand(rng, 8)) * TILE + 8;
     const y = (20 + irand(rng, 24)) * TILE + 8;
-    list.push(mob("bandit", "길목 도적", x, y, { hp: 32, atk: 8, def: 1, xp: 18, speed: 36 }));
+    list.push(mob("bandit", "길목 도적", x, y, { hp: 28, atk: 6, def: 1, xp: 18, speed: 34 }));
   }
   for (let i = 0; i < 3; i++) {
     const x = (42 + irand(rng, 12)) * TILE + 8;
@@ -351,8 +352,8 @@ export function createGame(seed = 0x7a6b): Game {
     player,
     mobs: spawnMobs(seed),
     npcs: [
-      { id: "trainer", name: "하렌", title: "성문 교관", x: 53 * TILE + 8, y: 57 * TILE + 8 },
-      { id: "inn", name: "밀라", title: "여관지기", x: 34 * TILE + 8, y: 65 * TILE + 8 },
+      { id: "trainer", name: "하렌", title: "성문 교관", x: 50 * TILE + 8, y: 55 * TILE + 8 },
+      { id: "inn", name: "밀라", title: "여관지기", x: 42 * TILE + 8, y: 64 * TILE + 8 },
     ],
     drops: [],
     shots: [],
@@ -370,6 +371,7 @@ export function createGame(seed = 0x7a6b): Game {
     uid: 1,
     log: ["잔광성 외곽 마을에 도착했다."],
     dirtyUi: 1,
+    hint: "",
   };
 }
 
@@ -673,7 +675,7 @@ function interact(g: Game, audio: Synth): void {
     }
   }
   for (const n of g.npcs) {
-    if (dist(p.x, p.y, n.x, n.y) > 22) continue;
+    if (dist(p.x, p.y, n.x, n.y) > 36) continue;
     if (n.id === "trainer") {
       g.dialogKind = "trainer";
       const ready = g.quest.slimes >= g.quest.slimesNeed && g.quest.bandits >= g.quest.banditsNeed;
@@ -737,13 +739,15 @@ function updateMobs(g: Game, audio: Synth, dt: number): void {
       continue;
     }
     m.attackCd = Math.max(0, m.attackCd - dt);
+    const townY = 52 * TILE;
     const d = dist(m.x, m.y, p.x, p.y);
     const leash = dist(m.x, m.y, m.sx, m.sy);
-    if (d < (m.elite ? 90 : 70)) m.aggro = 2.5;
+    const playerInTown = p.y >= townY;
+    if (!playerInTown && d < (m.elite ? 90 : 64)) m.aggro = 2.5;
     else m.aggro -= dt;
     let tx = m.sx;
     let ty = m.sy;
-    if (m.aggro > 0 && leash < 170) {
+    if (m.aggro > 0 && leash < 170 && !playerInTown) {
       tx = p.x;
       ty = p.y;
     }
@@ -754,10 +758,10 @@ function updateMobs(g: Game, audio: Synth, dt: number): void {
       const sp = m.speed * dt;
       const n = tryMove(g, m.x, m.y, m.x + (dx / len) * sp, m.y + (dy / len) * sp, m.radius);
       m.x = n.x;
-      m.y = n.y;
+      m.y = Math.min(n.y, townY - 4);
       m.facing = facingOf(dx, dy, m.facing);
     }
-    if (d < 14 + (m.elite ? 4 : 0) && m.attackCd <= 0 && g.screen === "play") {
+    if (m.y < townY && d < 14 + (m.elite ? 4 : 0) && m.attackCd <= 0 && g.screen === "play") {
       m.attackCd = m.elite ? 1.3 : 0.9;
       hurtPlayer(g, audio, m.atk);
     }
@@ -798,8 +802,7 @@ export function updateGame(g: Game, input: Input, audio: Synth, dt: number): voi
     return;
   }
   if (g.screen === "dead") {
-    if (input.consume("Enter") || input.consume(" ") || input.consume("e") || input.click) {
-      input.click = false;
+    if (input.consume("Enter") || input.consume("r")) {
       respawn(g);
       audio.unlock();
     }
@@ -850,6 +853,11 @@ export function updateGame(g: Game, input: Input, audio: Synth, dt: number): voi
   }
 
   const p = g.player;
+  g.hint = "";
+  for (const n of g.npcs) {
+    if (dist(p.x, p.y, n.x, n.y) < 36) g.hint = `E · ${n.title} ${n.name}`;
+  }
+  if (!g.hint && dist(p.x, p.y, 48 * TILE + 8, 65 * TILE + 8) < 22) g.hint = "E · 광장 우물";
   p.attackCd = Math.max(0, p.attackCd - dt);
   p.skillCd = Math.max(0, p.skillCd - dt);
   p.attackT = Math.max(0, p.attackT - dt);

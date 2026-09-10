@@ -28,6 +28,9 @@ assert(g.player.x > x0 + 8, `moved east (${x0} -> ${g.player.x})`);
 const wallX = 28 * TILE;
 const wallY = 60 * TILE;
 assert(!walkable(g.world, wallX, wallY, 4), "town fence solid");
+const trainer = g.npcs.find((n) => n.id === "trainer");
+assert(!!trainer, "trainer exists");
+assert(trainer!.y >= 52 * TILE, "trainer in town");
 
 const slime = g.mobs.find((m) => m.kind === "slime" && !m.dead)!;
 const beforeHp = slime.hp;

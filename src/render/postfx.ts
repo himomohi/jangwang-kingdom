@@ -19,27 +19,27 @@ void main() {
   vec2 uv = vUv;
   vec2 c = uv - 0.5;
   float r2 = dot(c, c);
-  uv = 0.5 + c * (1.0 + 0.07 * r2);
+  uv = 0.5 + c * (1.0 + 0.025 * r2);
 
-  vec2 ca = vec2(0.0015, 0.0);
+  vec2 ca = vec2(0.0007, 0.0);
   float r = texture2D(uTex, uv + ca).r;
   float g = texture2D(uTex, uv).g;
   float b = texture2D(uTex, uv - ca).b;
   vec3 col = vec3(r, g, b);
 
   vec3 bloom = vec3(0.0);
-  bloom += texture2D(uTex, uv + vec2(0.0024, 0.0)).rgb;
-  bloom += texture2D(uTex, uv + vec2(-0.0024, 0.0)).rgb;
-  bloom += texture2D(uTex, uv + vec2(0.0, 0.0024)).rgb;
-  bloom += texture2D(uTex, uv + vec2(0.0, -0.0024)).rgb;
+  bloom += texture2D(uTex, uv + vec2(0.003, 0.0)).rgb;
+  bloom += texture2D(uTex, uv + vec2(-0.003, 0.0)).rgb;
+  bloom += texture2D(uTex, uv + vec2(0.0, 0.003)).rgb;
+  bloom += texture2D(uTex, uv + vec2(0.0, -0.003)).rgb;
   bloom *= 0.25;
-  float lum = dot(bloom, vec3(0.32, 0.5, 0.18));
-  col += bloom * smoothstep(0.42, 0.82, lum) * 0.55;
+  float lum = dot(bloom, vec3(0.3, 0.5, 0.2));
+  col += bloom * smoothstep(0.62, 0.9, lum) * 0.35;
 
-  float scan = 0.86 + 0.14 * sin((uv.y + uTime * 0.02) * uRes.y * 3.14159);
+  float scan = 0.97 + 0.03 * sin(vUv.y * 280.0 * 3.14159 + uTime * 0.4);
   col *= scan;
-  col *= 1.0 - r2 * 1.25;
-  col *= 1.04;
+  col *= 1.0 - r2 * 0.55;
+  col = col * 0.92 + 0.06;
   gl_FragColor = vec4(col, 1.0);
 }
 `;
