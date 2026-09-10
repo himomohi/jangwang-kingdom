@@ -1,0 +1,21 @@
+{
+  "name": "jangwang-kingdom",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "잔광왕국 (Jangwang Kingdom) — original top-down action RPG homage to late-90s Korean MMO feel",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "smoke": "esbuild scripts/smoke.ts --bundle --platform=node --format=cjs --outfile=/tmp/jw-smoke.cjs --log-level=error && node /tmp/jw-smoke.cjs",
+    "test": "npm run smoke",
+    "e2e": "node scripts/e2e.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2",
+    "puppeteer-core": "^25.10.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.11"
+  }
+}

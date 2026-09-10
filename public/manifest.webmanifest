@@ -1,0 +1,18 @@
+{
+  "name": "잔광왕국 Jangwang Kingdom",
+  "short_name": "잔광왕국",
+  "description": "오리지널 탑다운 액션 RPG",
+  "start_url": "/jangwang-kingdom/",
+  "scope": "/jangwang-kingdom/",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#101828",
+  "theme_color": "#101828",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}

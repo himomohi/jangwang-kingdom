@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#101828" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="description" content="잔광왕국 — 오리지널 탑다운 액션 RPG. 탐색, 전투, 전리품, 전직의 모험." />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23101828'/%3E%3Crect x='6' y='2' width='4' height='12' fill='%23e8933c'/%3E%3Crect x='2' y='6' width='12' height='4' fill='%23f2c14e'/%3E%3C/svg%3E" />
+    <title>잔광왕국 — Jangwang Kingdom</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="stage">
+        <canvas id="world"></canvas>
+        <canvas id="post"></canvas>
+      </div>
+      <div id="hud" class="hidden">
+        <div id="hud-left">
+          <div id="bars">
+            <div class="bar-row"><span class="bar-label">HP</span><div class="bar"><div id="hp-fill"></div><span id="hp-text"></span></div></div>
+            <div class="bar-row"><span class="bar-label">MP</span><div class="bar"><div id="mp-fill"></div><span id="mp-text"></span></div></div>
+            <div class="bar-row"><span class="bar-label">XP</span><div class="bar thin"><div id="xp-fill"></div></div></div>
+          </div>
+          <div id="stat-line"><span id="lv-text"></span><span id="job-text"></span><span id="gold-text"></span></div>
+        </div>
+        <div id="hud-right">
+          <div id="zone-text"></div>
+          <div id="clock-text"></div>
+          <div id="hud-btns">
+            <button id="btn-inv" class="hud-btn" aria-label="가방">🎒</button>
+            <button id="btn-status" class="hud-btn" aria-label="상태">📊</button>
+            <button id="btn-help" class="hud-btn" aria-label="도움말">❓</button>
+            <button id="btn-mute" class="hud-btn" aria-label="음소거">🔊</button>
+            <button id="btn-menu" class="hud-btn" aria-label="메뉴">☰</button>
+          </div>
+        </div>
+        <div id="boss-bar" class="hidden"><span id="boss-name"></span><div class="bar"><div id="boss-fill"></div></div></div>
+        <div id="skill-cd"><div id="skill-cd-fill"></div><span id="skill-cd-text"></span></div>
+      </div>
+      <div id="touch" class="hidden">
+        <div id="joy-zone"><div id="joy-base"><div id="joy-knob"></div></div></div>
+        <div id="touch-btns">
+          <button id="t-potion" class="tbtn small" aria-label="물약">🧪</button>
+          <button id="t-interact" class="tbtn small" aria-label="대화">💬</button>
+          <button id="t-skill" class="tbtn" aria-label="스킬">✨</button>
+          <button id="t-attack" class="tbtn big" aria-label="공격">⚔️</button>
+        </div>
+      </div>
+      <div id="toast-wrap"></div>
+      <div id="dialog" class="hidden">
+        <div id="dialog-name"></div>
+        <div id="dialog-text"></div>
+        <div id="dialog-choices"></div>
+        <div id="dialog-hint">E / 탭하여 계속</div>
+      </div>
+      <div id="panel" class="hidden">
+        <div id="panel-head"><span id="panel-title"></span><button id="panel-close" aria-label="닫기">✕</button></div>
+        <div id="panel-body"></div>
+      </div>
+      <div id="screens">
+        <div id="title-screen" class="screen">
+          <h1 id="game-title">잔광왕국</h1>
+          <p id="game-sub">JANGWANG KINGDOM · 엠버게이트의 잔광</p>
+          <div id="title-menu">
+            <button id="btn-new" class="menu-btn">⚔️ 새로 시작</button>
+            <button id="btn-continue" class="menu-btn">📜 이어하기</button>
+            <button id="btn-howto" class="menu-btn">❓ 조작법</button>
+          </div>
+          <p id="title-foot">오리지널 IP · late-90s 국산 MMO 감성 오마주 (에셋·명칭 비복제)</p>
+        </div>
+        <div id="help-screen" class="screen hidden">
+          <h2>조작법</h2>
+          <div class="help-grid">
+            <div><b>이동</b><span>WASD / 방향키 · 모바일: 좌측 조이스틱</span></div>
+            <div><b>공격</b><span>J / Z / 스페이스 · 모바일: ⚔️</span></div>
+            <div><b>스킬</b><span>K / X / Shift · 모바일: ✨</span></div>
+            <div><b>대화/상호작용</b><span>E / F / Enter · 모바일: 💬</span></div>
+            <div><b>물약</b><span>P · 모바일: 🧪</span></div>
+            <div><b>가방/상태</b><span>I / C · 우상단 버튼</span></div>
+            <div><b>음소거/메뉴</b><span>M / Esc</span></div>
+          </div>
+          <p class="help-tip">Lv.5 달성 후 엠버게이트의 <b>전직관</b>에게 말을 걸어 전직하세요.<br/>북쪽 폐허에는 강적 <b>철갑감시자</b>가 있습니다.</p>
+          <button id="btn-help-back" class="menu-btn">돌아가기</button>
+        </div>
+        <div id="over-screen" class="screen hidden">
+          <h2>쓰러졌습니다…</h2>
+          <p id="over-stats"></p>
+          <div id="over-menu">
+            <button id="btn-respawn" class="menu-btn">엠버게이트에서 부활</button>
+            <button id="btn-title" class="menu-btn">타이틀로</button>
+          </div>
+        </div>
+        <div id="pause-screen" class="screen hidden">
+          <h2>일시정지</h2>
+          <div id="pause-menu">
+            <button id="btn-save" class="menu-btn">💾 저장하기</button>
+            <button id="btn-resume" class="menu-btn">▶ 계속하기</button>
+            <button id="btn-quit-title" class="menu-btn">타이틀로</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
