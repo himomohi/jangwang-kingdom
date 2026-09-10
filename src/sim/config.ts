@@ -7,6 +7,75 @@ export const WORLD_H = 72;
 export const SAVE_KEY = 'jangwang-kingdom-save-v1';
 export const DAY_LENGTH = 300; // seconds per full day
 
+/**
+ * Global game-feel tunables (late-90s MMO pace: "weighty", not sluggish).
+ * All tempo numbers live here so the whole game can be retuned in one place.
+ * `was X` comments record pre-slowdown values (c78f56a baseline).
+ */
+export const TEMPO = {
+  // --- player locomotion / basic attack ---
+  playerBaseSpd: 76, // was 96 (-20.8%)
+  playerAttackCd: 0.46, // was 0.38 (+21%)
+  bladerAttackCdMul: 0.82, // was 0.8
+  playerSwingDur: 0.3, // was 0.22 — swing pose 0..1 duration (s)
+  enemySwingDur: 0.34, // was 0.25
+  playerLunge: 4, // was 5 — forward step on swing (px)
+
+  // --- skill / potion / talk / death pose durations ---
+  skillCastDur: 0.45, // cast pose length (s)
+  potionDur: 0.55, // potion drink pose length (s)
+  talkDur: 1.4, // interact/talk pose hold (s)
+  playerDeadFade: 1.2, // player death pose fade (s)
+  enemyDeadFade: 0.9, // was 0.6 — corpse lifetime (s)
+  enemyDeadFadeElite: 1.3, // elite lingers longer
+
+  // --- dash skill (commoner/knight) ---
+  dashDur: 0.22, // was 0.16 (+37% — less frantic)
+  dashDist: 44, // was 46 (dash speed 287 -> 200 px/s)
+  dashHitRadius: 30,
+
+  // --- hurt readability (i-frames / flash) ---
+  playerHurtCd: 0.9, // was 0.7 (+29%)
+  enemyHurtFlash: 0.35, // was 0.25
+
+  // --- enemy cadence ---
+  enemySpeedMul: 0.82, // global chase slowdown (-18%)
+  enemyAtkCdMul: 1.3, // all enemy attack cooldowns x1.3
+  enemyRecover: 0.42, // was 0.3 — post-attack recovery (s)
+  /** Per-kind attack telegraph (windup) in seconds. 0.2-0.4s readable; elite heavier. */
+  windup: { slime: 0.4, wolf: 0.32, bandit: 0.36, shade: 0.4, watcher: 0.65 } as Record<EnemyKind, number>,
+
+  // --- knockback (power + decay) ---
+  knockDecayPlayer: 6.5, // was 8 — slower decay = longer readable slide
+  knockDecayEnemy: 6.0, // was 7
+  knockPlayerAtk: 135, // was 120
+  knockDash: 165, // was 160
+  knockBlader: 95, // was 90
+  knockHoly: 210, // was 200
+  knockToPlayer: 135, // was 130
+  knockProjectile: 105, // was 100
+
+  // --- projectiles ---
+  projFriendlySpd: 225, // was 260 (-13%)
+  projEnemySpd: 145, // was 170 (-15%)
+
+  // --- camera / animation rates (renderer) ---
+  cameraFollow: 3.2, // was 6 — lower = smoother, less snappy
+  walkPhaseRate: 8.5, // was 11 rad/s — matches slower stride
+  idlePhaseRate: 2.0, // was 2.5 — calmer breathe
+  trailTtl: 0.32, // was 0.28 — slash trail linger (s)
+  footDustCd: 0.18, // was 0.14 fallback; primary dust is stride-synced
+  pickupMagnetSpd: 105, // was 120
+
+  // --- floating text / screen fx / spawner / toasts ---
+  floatTtl: 1.15, // was 1
+  floatRise: 22, // was 26 px/s
+  shakeDur: 0.32, // was 0.3
+  flashDur: 0.4, // was 0.35
+  toastDur: 3200, // was 2600 ms
+  spawnTick: 1.4, // was 1.2
+};
+
 export const JOB_NAMES: Record<JobId, string> = {
   commoner: '평민',
   knight: '왕국기사',

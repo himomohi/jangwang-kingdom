@@ -1,6 +1,6 @@
 import {
   ENEMIES, ITEMS, JOB_MODS, JOB_NAMES, JOB_SKILL, SHOP_STOCK,
-  TILE, DAY_LENGTH, xpForLevel,
+  TEMPO, TILE, DAY_LENGTH, xpForLevel,
 } from './config';
 import { calcDamage, dist, facingAngle, facingFromVec, inArc } from './combat';
 import { rollLoot } from './loot';
@@ -27,15 +27,13 @@ export interface InteractResult {
   npc?: NpcState;
 }
 
-const ATTACK_CD = 0.38;
-
 function baseStats(level: number): Stats {
   return {
     maxHp: 60 + (level - 1) * 9,
     maxMp: 30 + (level - 1) * 4,
     atk: 8 + (level - 1) * 2,
     def: 2 + Math.floor((level - 1) * 0.8),
-    spd: 96,
+    spd: TEMPO.playerBaseSpd,
     crit: 0.05,
   };
 }
@@ -99,6 +97,7 @@ export class Sim {
       inv: [], equip: { weapon: null, armor: null, charm: null },
       potions: 2,
       atkCd: 0, skillCd: 0, skillCdMax: 1, hurtCd: 0, swingT: -1,
+      castT: -1, potionT: -1, talkT: 0, deadT: 0,
       shieldT: 0, kx: 0, ky: 0, alive: true, kills: 0,
     };
     this.recompute(false);
@@ -199,6 +198,7 @@ export class Sim {
     } else {
       // death drift: still tick cooldowns so respawn is clean
       p.hurtCd = Math.max(0, p.hurtCd - dt);
+      p.deadT += dt;
     }
     this.updateEnemies(dt);
     this.updateProjectiles(dt);
@@ -227,23 +227,32 @@ export class Sim {
     p.skillCd = Math.max(0, p.skillCd - dt);
     p.hurtCd = Math.max(0, p.hurtCd - dt);
     p.shieldT = Math.max(0, p.shieldT - dt);
+    p.talkT = Math.max(0, p.talkT - dt);
     if (p.swingT >= 0) {
-      p.swingT += dt / 0.22;
+      p.swingT += dt / TEMPO.playerSwingDur;
       if (p.swingT > 1) p.swingT = -1;
+    }
+    if (p.castT >= 0) {
+      p.castT += dt / TEMPO.skillCastDur;
+      if (p.castT > 1) p.castT = -1;
+    }
+    if (p.potionT >= 0) {
+      p.potionT += dt / TEMPO.potionDur;
+      if (p.potionT > 1) p.potionT = -1;
     }
 
     // dash (commoner/knight skill)
     if (this.dashT > 0) {
       this.dashT -= dt;
-      const step = dt / Math.max(0.001, 0.16);
-      this.world.moveCircle(p, this.dashDx * step * 46, this.dashDy * step * 46, 5);
+      const step = dt / Math.max(0.001, TEMPO.dashDur);
+      this.world.moveCircle(p, this.dashDx * step * TEMPO.dashDist, this.dashDy * step * TEMPO.dashDist, 5);
       // damage enemies on contact path
       for (const e of this.enemies) {
         if (e.dead || this.dashHit.has(e.uid)) continue;
-        if (dist(p.x, p.y, e.x, e.y) < 30) {
+        if (dist(p.x, p.y, e.x, e.y) < TEMPO.dashHitRadius) {
           this.dashHit.add(e.uid);
           const { dmg, crit } = calcDamage(this.dashDmg, e.def, p.stats.crit, this.rng);
-          this.damageEnemy(e, dmg, crit, facingAngle(p.facing), 160);
+          this.damageEnemy(e, dmg, crit, facingAngle(p.facing), TEMPO.knockDash);
         }
       }
       if (this.dashT <= 0) this.dashHit.clear();
@@ -265,7 +274,7 @@ export class Sim {
     // knockback decay
     if (p.kx !== 0 || p.ky !== 0) {
       this.world.moveCircle(p, p.kx * dt, p.ky * dt, 5);
-      const decay = Math.max(0, 1 - dt * 8);
+      const decay = Math.max(0, 1 - dt * TEMPO.knockDecayPlayer);
       p.kx *= decay;
       p.ky *= decay;
       if (Math.hypot(p.kx, p.ky) < 4) {
@@ -284,6 +293,7 @@ export class Sim {
       if (npc) {
         p.facing = facingFromVec(npc.x - p.x, npc.y - p.y);
         npc.facing = facingFromVec(p.x - npc.x, p.y - npc.y);
+        p.talkT = TEMPO.talkDur;
       }
     }
   }
@@ -326,7 +336,7 @@ export class Sim {
   tryAttack(): boolean {
     const p = this.player;
     if (!p.alive || p.atkCd > 0 || this.dashT > 0) return false;
-    p.atkCd = ATTACK_CD * (p.job === 'blader' ? 0.8 : 1);
+    p.atkCd = TEMPO.playerAttackCd * (p.job === 'blader' ? TEMPO.bladerAttackCdMul : 1);
     p.swingT = 0;
     this.autoFace();
     const range = p.job === 'knight' ? 36 : 30;
@@ -336,11 +346,11 @@ export class Sim {
       if (e.dead) continue;
       if (!inArc(p.x, p.y, fa, range + (e.elite ? 8 : 0), 1.25, e.x, e.y)) continue;
       const { dmg, crit } = calcDamage(p.stats.atk, e.def, p.stats.crit, this.rng);
-      this.damageEnemy(e, dmg, crit, fa, 120);
+      this.damageEnemy(e, dmg, crit, fa, TEMPO.knockPlayerAtk);
       hitAny = true;
     }
     // small forward lunge
-    this.world.moveCircle(p, Math.cos(fa) * 5, Math.sin(fa) * 5, 5);
+    this.world.moveCircle(p, Math.cos(fa) * TEMPO.playerLunge, Math.sin(fa) * TEMPO.playerLunge, 5);
     this.events.push({ t: 'sfx', id: hitAny ? 'swing_hit' : 'swing' });
     this.burst(p.x + Math.cos(fa) * 18, p.y + Math.sin(fa) * 18, 4, hitAny ? 11 : 8, 60);
     return true;
@@ -363,7 +373,7 @@ export class Sim {
 
     if (p.job === 'commoner' || p.job === 'knight') {
       const power = p.job === 'knight' ? 1.8 : 1.3;
-      this.dashT = 0.16;
+      this.dashT = TEMPO.dashDur;
       this.dashDx = Math.cos(fa);
       this.dashDy = Math.sin(fa);
       this.dashHit.clear();
@@ -375,13 +385,14 @@ export class Sim {
       this.burst(p.x, p.y - 8, 10, p.job === 'knight' ? 3 : 8, 120);
     } else if (p.job === 'blader') {
       p.swingT = 0;
+      p.castT = 0;
       let hits = 0;
       for (let i = 0; i < 3; i++) {
         for (const e of this.enemies) {
           if (e.dead) continue;
           if (!inArc(p.x, p.y, fa, 34, 1.3, e.x, e.y)) continue;
           const { dmg, crit } = calcDamage(Math.round(p.stats.atk * 0.85), e.def, Math.min(0.6, p.stats.crit + 0.15), this.rng);
-          this.damageEnemy(e, dmg, crit, fa, 90);
+          this.damageEnemy(e, dmg, crit, fa, TEMPO.knockBlader);
           hits++;
         }
       }
@@ -389,19 +400,21 @@ export class Sim {
       this.events.push({ t: 'shake', power: hits > 0 ? 3 : 1 });
       this.burst(p.x + Math.cos(fa) * 22, p.y + Math.sin(fa) * 22, 12, 10, 150);
     } else if (p.job === 'arcanist') {
+      p.castT = 0;
       const baseA = fa;
       for (let i = -1; i <= 1; i++) {
         const a = baseA + i * 0.18;
         this.projectiles.push({
           uid: this.uid++, x: p.x + Math.cos(a) * 12, y: p.y - 8 + Math.sin(a) * 12,
-          vx: Math.cos(a) * 260, vy: Math.sin(a) * 260,
-          life: 1.1, friendly: true, holy: false,
+          vx: Math.cos(a) * TEMPO.projFriendlySpd, vy: Math.sin(a) * TEMPO.projFriendlySpd,
+          life: 1.25, friendly: true, holy: false,
           dmg: Math.round(p.stats.atk * 1.25), radius: 6,
         });
       }
       this.events.push({ t: 'sfx', id: 'fireball' });
       this.burst(p.x + Math.cos(fa) * 14, p.y - 8, 8, 9, 100);
     } else if (p.job === 'shrine') {
+      p.castT = 0;
       const heal = Math.round(p.stats.maxHp * 0.35);
       p.hp = Math.min(p.stats.maxHp, p.hp + heal);
       this.addText(p.x, p.y - 26, `+${heal}`, 'heal');
@@ -409,7 +422,7 @@ export class Sim {
         if (e.dead) continue;
         if (dist(p.x, p.y, e.x, e.y) < 95) {
           const { dmg, crit } = calcDamage(p.stats.atk, e.def, p.stats.crit, this.rng);
-          this.damageEnemy(e, dmg, crit, Math.atan2(e.y - p.y, e.x - p.x), 200);
+          this.damageEnemy(e, dmg, crit, Math.atan2(e.y - p.y, e.x - p.x), TEMPO.knockHoly);
         }
       }
       this.events.push({ t: 'sfx', id: 'holy' });
@@ -427,6 +440,7 @@ export class Sim {
     }
     if (p.hp >= p.stats.maxHp) return false;
     p.potions--;
+    p.potionT = 0;
     const heal = 40 + Math.round(p.stats.maxHp * 0.15);
     p.hp = Math.min(p.stats.maxHp, p.hp + heal);
     this.addText(p.x, p.y - 26, `+${heal}`, 'heal');
@@ -438,6 +452,7 @@ export class Sim {
   tryInteract(): InteractResult {
     const npc = this.nearestNpc(36);
     if (!npc) return { kind: 'none' };
+    this.player.talkT = TEMPO.talkDur;
     this.events.push({ t: 'sfx', id: 'talk' });
     return { kind: 'npc', npc };
   }
@@ -447,7 +462,7 @@ export class Sim {
   damageEnemy(e: EnemyState, dmg: number, crit: boolean, fromAngle: number, knock: number): void {
     if (e.dead) return;
     e.hp -= dmg;
-    e.hurtCd = 0.25;
+    e.hurtCd = TEMPO.enemyHurtFlash;
     e.kx += Math.cos(fromAngle) * knock * (e.elite ? 0.25 : 1);
     e.ky += Math.sin(fromAngle) * knock * (e.elite ? 0.25 : 1);
     if (e.ai === 'idle') e.ai = 'chase';
@@ -499,10 +514,10 @@ export class Sim {
     let final = dmg;
     if (p.shieldT > 0) final = Math.max(1, Math.round(final * 0.5));
     p.hp -= final;
-    p.hurtCd = 0.7;
+    p.hurtCd = TEMPO.playerHurtCd;
     const a = Math.atan2(p.y - fromY, p.x - fromX);
-    p.kx += Math.cos(a) * 130;
-    p.ky += Math.sin(a) * 130;
+    p.kx += Math.cos(a) * TEMPO.knockToPlayer;
+    p.ky += Math.sin(a) * TEMPO.knockToPlayer;
     this.addText(p.x, p.y - 26, String(final), 'hurt');
     this.events.push({ t: 'sfx', id: 'hurt' });
     this.events.push({ t: 'shake', power: 3 });
@@ -511,6 +526,7 @@ export class Sim {
     if (p.hp <= 0) {
       p.hp = 0;
       p.alive = false;
+      p.deadT = 0;
       this.events.push({ t: 'died' });
       this.events.push({ t: 'sfx', id: 'player_die' });
     }
@@ -567,7 +583,7 @@ export class Sim {
       e.hurtCd = Math.max(0, e.hurtCd - dt);
       e.atkCd = Math.max(0, e.atkCd - dt);
       if (e.swingT >= 0) {
-        e.swingT += dt / 0.25;
+        e.swingT += dt / TEMPO.enemySwingDur;
         if (e.swingT > 1) e.swingT = -1;
       }
       e.stateT += dt;
@@ -578,7 +594,7 @@ export class Sim {
       // knockback
       if (e.kx !== 0 || e.ky !== 0) {
         this.world.moveCircle(e, e.kx * dt, e.ky * dt, 5);
-        const decay = Math.max(0, 1 - dt * 7);
+        const decay = Math.max(0, 1 - dt * TEMPO.knockDecayEnemy);
         e.kx *= decay;
         e.ky *= decay;
         if (Math.hypot(e.kx, e.ky) < 5) {
@@ -596,7 +612,8 @@ export class Sim {
           }
           if (this.rng() < dt * 0.9) {
             const a = facingAngle(e.facing);
-            this.world.moveCircle(e, Math.cos(a) * e.spd * 0.25 * dt, Math.sin(a) * e.spd * 0.25 * dt, 5);
+            const wob = e.spd * TEMPO.enemySpeedMul * 0.25;
+            this.world.moveCircle(e, Math.cos(a) * wob * dt, Math.sin(a) * wob * dt, 5);
           }
           if (p.alive && dPlayer < def.aggro && this.zone !== 'town') {
             e.ai = 'chase';
@@ -613,7 +630,7 @@ export class Sim {
           e.facing = facingFromVec(p.x - e.x, p.y - e.y);
           if (dPlayer > def.atkRange) {
             const a = Math.atan2(p.y - e.y, p.x - e.x);
-            const sp = e.spd * (def.ranged && dPlayer < 90 ? -0.6 : 1);
+            const sp = e.spd * TEMPO.enemySpeedMul * (def.ranged && dPlayer < 90 ? -0.6 : 1);
             this.world.moveCircle(e, Math.cos(a) * sp * dt, Math.sin(a) * sp * dt, 5);
           } else if (e.atkCd <= 0) {
             e.ai = 'windup';
@@ -624,19 +641,19 @@ export class Sim {
         }
         case 'windup': {
           e.facing = facingFromVec(p.x - e.x, p.y - e.y);
-          const windupTime = e.elite ? 0.55 : 0.38;
+          const windupTime = TEMPO.windup[e.kind];
           if (e.stateT >= windupTime) {
             e.ai = 'recover';
             e.stateT = 0;
-            e.atkCd = def.atkCd;
+            e.atkCd = def.atkCd * TEMPO.enemyAtkCdMul;
             if (def.ranged) {
               // fire bolt
               const a = Math.atan2(p.y - (e.y - 8), p.x - e.x);
               const rp = calcDamage(e.atk, 0, 0, this.rng);
               this.projectiles.push({
                 uid: this.uid++, x: e.x, y: e.y - 8,
-                vx: Math.cos(a) * 170, vy: Math.sin(a) * 170,
-                life: 1.6, friendly: false, holy: false, dmg: rp.dmg, radius: 5,
+                vx: Math.cos(a) * TEMPO.projEnemySpd, vy: Math.sin(a) * TEMPO.projEnemySpd,
+                life: 1.85, friendly: false, holy: false, dmg: rp.dmg, radius: 5,
               });
               this.events.push({ t: 'sfx', id: 'bolt' });
             } else if (e.elite && this.rng() < 0.35) {
@@ -656,7 +673,7 @@ export class Sim {
           break;
         }
         case 'recover': {
-          if (e.stateT > 0.3) {
+          if (e.stateT > TEMPO.enemyRecover) {
             e.ai = 'chase';
             e.stateT = 0;
           }
@@ -675,7 +692,8 @@ export class Sim {
           } else {
             const a = Math.atan2(e.spawnY - e.y, e.spawnX - e.x);
             e.facing = facingFromVec(e.spawnX - e.x, e.spawnY - e.y);
-            this.world.moveCircle(e, Math.cos(a) * e.spd * 0.8 * dt, Math.sin(a) * e.spd * 0.8 * dt, 5);
+            const rsp = e.spd * TEMPO.enemySpeedMul * 0.8;
+            this.world.moveCircle(e, Math.cos(a) * rsp * dt, Math.sin(a) * rsp * dt, 5);
           }
           break;
         }
@@ -703,8 +721,8 @@ export class Sim {
       }
     }
 
-    // remove long-dead
-    this.enemies = this.enemies.filter((e) => !e.dead || e.deadT < 0.6);
+    // remove long-dead (elite corpses linger for a heavier death read)
+    this.enemies = this.enemies.filter((e) => !e.dead || e.deadT < (e.elite ? TEMPO.enemyDeadFadeElite : TEMPO.enemyDeadFade));
   }
 
   private updateProjectiles(dt: number): void {
@@ -727,7 +745,7 @@ export class Sim {
           if (dist(pr.x, pr.y, e.x, e.y - 6) < rr) {
             pr.life = 0;
             const { dmg, crit } = calcDamage(pr.dmg, e.def, p.stats.crit, this.rng);
-            this.damageEnemy(e, dmg, crit, Math.atan2(pr.vy, pr.vx), 100);
+            this.damageEnemy(e, dmg, crit, Math.atan2(pr.vy, pr.vx), TEMPO.knockProjectile);
             break;
           }
         }
@@ -751,8 +769,8 @@ export class Sim {
       if (d < 30) {
         // magnet
         const a = Math.atan2(p.y - k.y, p.x - k.x);
-        k.x += Math.cos(a) * 120 * dt;
-        k.y += Math.sin(a) * 120 * dt;
+        k.x += Math.cos(a) * TEMPO.pickupMagnetSpd * dt;
+        k.y += Math.sin(a) * TEMPO.pickupMagnetSpd * dt;
       }
       if (d < 14) {
         k.ttl = 0;
@@ -802,7 +820,7 @@ export class Sim {
       }
     }
     if (this.spawnT > 0) return;
-    this.spawnT = 1.2;
+    this.spawnT = TEMPO.spawnTick;
     const aliveCount = this.enemies.filter((e) => !e.dead && !e.elite).length;
     if (aliveCount >= 34) return;
     // spawn 1-2 ambient mobs per tick
@@ -841,7 +859,7 @@ export class Sim {
 
   addText(x: number, y: number, text: string, color: FloatText['color']): void {
     if (this.texts.length > 60) this.texts.shift();
-    this.texts.push({ x: x + (this.rng() - 0.5) * 8, y, text, color, ttl: 1 });
+    this.texts.push({ x: x + (this.rng() - 0.5) * 8, y, text, color, ttl: TEMPO.floatTtl });
   }
 
   burst(x: number, y: number, n: number, color: number, spd: number): void {
@@ -883,7 +901,7 @@ export class Sim {
     this.particles = this.particles.filter((p) => p.ttl > 0);
     for (const t of this.texts) {
       t.ttl -= dt;
-      t.y -= 26 * dt;
+      t.y -= TEMPO.floatRise * dt;
     }
     this.texts = this.texts.filter((t) => t.ttl > 0);
   }
@@ -984,6 +1002,11 @@ export class Sim {
     p.kx = 0;
     p.ky = 0;
     p.hurtCd = 2;
+    p.swingT = -1;
+    p.castT = -1;
+    p.potionT = -1;
+    p.talkT = 0;
+    p.deadT = 0;
     const lost = Math.floor(p.gold * 0.1);
     p.gold -= lost;
     this.zone = this.world.zoneAtPx(p.x, p.y);

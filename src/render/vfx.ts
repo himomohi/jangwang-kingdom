@@ -4,9 +4,10 @@
  * is drawn over lighting with additive blending so bloom can catch it.
  */
 import { C } from '../art/palette';
-import { facingAngle } from '../sim/combat';
+import { castFocus, strideFootfall, weaponTip } from '../art/anim';
+import { TEMPO } from '../sim/config';
 import type { Sim } from '../sim/game';
-import type { Facing, SimEvent } from '../sim/types';
+import type { SimEvent } from '../sim/types';
 
 interface Spark {
   x: number; y: number; vx: number; vy: number;
@@ -27,24 +28,26 @@ interface Ring {
   ttl: number; ttlMax: number; color: string; width: number;
 }
 
-function weaponTip(x: number, y: number, facing: Facing, swingT: number, scale: number): { x: number; y: number } {
-  const cx = x;
-  const cy = y - 9 * scale;
-  const base = facingAngle(facing);
-  const sweep = (Math.max(0, Math.min(1, swingT)) - 0.5) * 2.4;
-  const a = base + sweep;
-  const r = 15 * scale;
-  return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r * 0.9 };
-}
-
 function trailColorFor(kind: string): string {
-  if (kind === 'player') return C.FROST;
+  if (kind === 'player' || kind === 'knight') return C.FROST;
+  if (kind === 'blader') return C.GOLD;
+  if (kind === 'arcanist') return C.MIST;
+  if (kind === 'shrine') return C.GOLD;
   if (kind === 'watcher') return C.FLAME;
   if (kind === 'bandit') return C.EMBER;
   if (kind === 'wolf') return C.MIST;
   if (kind === 'shade') return C.FROST;
+  if (kind === 'slime') return C.LEAF;
   return C.BONE;
 }
+
+const DEATH_COLORS: Record<string, string[]> = {
+  slime: [C.LEAF, C.MOSS, C.FROST],
+  wolf: [C.SLATE, C.MIST, C.BLOOD],
+  bandit: [C.BLOOD, C.EMBER, C.SKIN],
+  shade: [C.DUSK, C.MIST, C.FROST],
+  watcher: [C.FLAME, C.GOLD, C.BONE],
+};
 
 export class VfxSystem {
   private sparks: Spark[] = [];
@@ -58,7 +61,12 @@ export class VfxSystem {
   private levelFlashY = 0;
   private levelFlashColor: string = C.GOLD;
   private prevEnemyHp = new Map<number, number>();
+  private prevEnemyDead = new Map<number, boolean>();
+  private prevEnemyAi = new Map<number, string>();
   private prevPlayerHp = -1;
+  private prevCastT = -1;
+  private prevPotionT = -1;
+  private prevSin = new Map<string | number, number>();
   private lastPos = new Map<string | number, { x: number; y: number }>();
   private dustCd = new Map<string | number, number>();
 
@@ -70,7 +78,12 @@ export class VfxSystem {
     this.rings.length = 0;
     this.levelFlashT = 0;
     this.prevEnemyHp.clear();
+    this.prevEnemyDead.clear();
+    this.prevEnemyAi.clear();
     this.prevPlayerHp = -1;
+    this.prevCastT = -1;
+    this.prevPotionT = -1;
+    this.prevSin.clear();
     this.lastPos.clear();
     this.dustCd.clear();
   }
@@ -89,8 +102,16 @@ export class VfxSystem {
   }
 
   spawnHit(x: number, y: number, crit: boolean, red = false): void {
+    this.spawnHitDir(x, y, crit, red, 0, 0);
+  }
+
+  /** Directional hit sparks: biased along the knockback vector for clear feedback. */
+  spawnHitDir(x: number, y: number, crit: boolean, red: boolean, dx: number, dy: number): void {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     const n = crit ? 12 : 6;
+    const mag = Math.hypot(dx, dy);
+    const nx = mag > 1 ? dx / mag : 0;
+    const ny = mag > 1 ? dy / mag : 0;
     for (let i = 0; i < n; i++) {
       if (this.sparks.length > 300) this.sparks.shift();
       const a = Math.random() * Math.PI * 2;
@@ -100,10 +121,61 @@ export class VfxSystem {
       if (red) color = i % 3 === 0 ? C.BONE : i % 3 === 1 ? C.FLAME : C.BLOOD;
       else if (crit) color = i % 3 === 0 ? C.GOLD : i % 3 === 1 ? C.BONE : C.FLAME;
       else color = i % 3 === 0 ? C.BONE : i % 3 === 1 ? C.FROST : C.EMBER;
+      // bias half the sparks along the knock direction
+      const bias = i % 2 === 0 ? 90 : 0;
       this.sparks.push({
         x, y,
-        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 40,
+        vx: Math.cos(a) * sp + nx * bias, vy: Math.sin(a) * sp - 40 + ny * bias,
         ttl, ttlMax: ttl, color, size: 1 + Math.floor(Math.random() * 3),
+      });
+    }
+  }
+
+  /** Kind-specific death burst: short but clear ragdoll-pop accompaniment. */
+  spawnDeathBurst(x: number, y: number, kind: string, elite: boolean): void {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const cols = DEATH_COLORS[kind] ?? [C.BONE, C.SAND, C.MIST];
+    const n = elite ? 22 : 10;
+    for (let i = 0; i < n; i++) {
+      if (this.sparks.length > 300) this.sparks.shift();
+      const a = -Math.PI * (0.15 + Math.random() * 0.7); // upward fan
+      const sp = (elite ? 90 : 60) + Math.random() * (elite ? 180 : 120);
+      const ttl = 0.3 + Math.random() * (elite ? 0.5 : 0.3);
+      this.sparks.push({
+        x: x + (Math.random() - 0.5) * (elite ? 20 : 10),
+        y: y - 4,
+        vx: Math.cos(a) * sp * (0.6 + Math.random() * 0.8),
+        vy: Math.sin(a) * sp,
+        ttl, ttlMax: ttl,
+        color: cols[i % cols.length],
+        size: 2 + Math.floor(Math.random() * (elite ? 3 : 2)),
+      });
+    }
+    if (elite) this.spawnRing(x, y - 8, 10, 170, 0.55, C.FLAME, 3);
+    else this.spawnRing(x, y - 4, 6, 90, 0.3, cols[0], 2);
+  }
+
+  /**
+   * Stride-synced footfall dust. The renderer calls this every frame with the
+   * same walk-cycle phase driving the legs, so puffs land exactly on footfalls.
+   */
+  noteStride(key: string | number, phase: number, moving: boolean, x: number, y: number, sizeMul = 1): void {
+    if (!Number.isFinite(phase) || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    const cur = Math.sin(phase);
+    const prev = this.prevSin.get(key);
+    this.prevSin.set(key, cur);
+    if (prev === undefined) return;
+    if (strideFootfall(prev, cur, moving)) {
+      if (this.dust.length > 200) this.dust.shift();
+      const ttl = 0.4 + Math.random() * 0.25;
+      this.dust.push({
+        x: x + (Math.random() - 0.5) * 6,
+        y: y - 1 + (Math.random() - 0.5) * 2,
+        vx: (Math.random() - 0.5) * 30,
+        vy: -8 - Math.random() * 18,
+        ttl, ttlMax: ttl,
+        size: Math.max(2, Math.round((2 + Math.random()) * sizeMul)),
+        color: Math.random() < 0.6 ? C.SAND : C.MIST,
       });
     }
   }
@@ -200,52 +272,117 @@ export class VfxSystem {
       } else if (e.hp < prev) {
         const dmg = prev - e.hp;
         const crit = dmg > e.maxHp * 0.16;
-        this.spawnHit(e.x, e.y - 10 * (e.elite ? 1.5 : 1), crit);
+        this.spawnHitDir(e.x, e.y - 10 * (e.elite ? 1.5 : 1), crit, false, e.kx, e.ky);
         this.prevEnemyHp.set(e.uid, e.hp);
       } else if (e.hp !== prev) {
         this.prevEnemyHp.set(e.uid, e.hp);
       }
+      // death edge -> kind-specific burst (short but clear)
+      const wasDead = this.prevEnemyDead.get(e.uid) ?? false;
+      if (e.dead && !wasDead) {
+        this.spawnDeathBurst(e.x, e.y, e.kind, e.elite);
+      }
+      this.prevEnemyDead.set(e.uid, e.dead);
+      // windup edge -> telegraph tick (elite also gets a warning ring)
+      const prevAi = this.prevEnemyAi.get(e.uid);
+      if (e.ai === 'windup' && prevAi !== 'windup' && !e.dead) {
+        const cols = DEATH_COLORS[e.kind] ?? [C.BONE];
+        for (let i = 0; i < 4; i++) {
+          if (this.sparks.length > 300) this.sparks.shift();
+          const ttl = 0.25;
+          this.sparks.push({
+            x: e.x + (Math.random() - 0.5) * 14, y: e.y - 14,
+            vx: 0, vy: -60,
+            ttl, ttlMax: ttl, color: i % 2 === 0 ? cols[0] : C.BONE, size: 2,
+          });
+        }
+        if (e.elite) this.spawnRing(e.x, e.y - 8, 14, 60, 0.4, C.FLAME, 2);
+      }
+      this.prevEnemyAi.set(e.uid, e.ai);
     }
     if (this.prevEnemyHp.size > 120) {
       const alive = new Set(sim.enemies.map((e) => e.uid));
       for (const k of [...this.prevEnemyHp.keys()]) {
         if (!alive.has(k)) this.prevEnemyHp.delete(k);
       }
+      for (const k of [...this.prevEnemyDead.keys()]) {
+        if (!alive.has(k)) this.prevEnemyDead.delete(k);
+      }
+      for (const k of [...this.prevEnemyAi.keys()]) {
+        if (!alive.has(k)) this.prevEnemyAi.delete(k);
+      }
+      for (const k of [...this.prevSin.keys()]) {
+        if (typeof k === 'number' && !alive.has(k)) this.prevSin.delete(k);
+      }
     }
     const p = sim.player;
     if (this.prevPlayerHp < 0) {
       this.prevPlayerHp = p.hp;
     } else if (p.hp < this.prevPlayerHp) {
-      this.spawnHit(p.x, p.y - 10, false, true);
+      this.spawnHitDir(p.x, p.y - 10, false, true, p.kx, p.ky);
       this.prevPlayerHp = p.hp;
     } else if (p.hp !== this.prevPlayerHp) {
       this.prevPlayerHp = p.hp;
     }
 
-    // slash trails from weapon tip samples while swinging
+    // skill-cast apex burst at the cast focus (staff gem / holy center)
+    if (this.prevCastT < 0.5 && p.castT >= 0.5 && p.alive) {
+      const f = castFocus(p.x, p.y, p.facing, 0.5, 1, p.job);
+      const col = p.job === 'shrine' ? C.GOLD : p.job === 'arcanist' ? C.MIST : p.job === 'blader' ? C.FLAME : C.BONE;
+      for (let i = 0; i < 8; i++) {
+        if (this.sparks.length > 300) this.sparks.shift();
+        const a = Math.random() * Math.PI * 2;
+        const ttl = 0.3 + Math.random() * 0.2;
+        this.sparks.push({
+          x: f.x, y: f.y,
+          vx: Math.cos(a) * 90, vy: Math.sin(a) * 90 - 30,
+          ttl, ttlMax: ttl, color: i % 2 === 0 ? col : C.BONE, size: 2,
+        });
+      }
+      if (p.job === 'shrine' || p.job === 'arcanist') this.spawnRing(f.x, f.y, 6, 110, 0.35, col, 2);
+    }
+    this.prevCastT = p.castT;
+    // potion finish sparkle (rising motes as the drink ends)
+    if (this.prevPotionT < 0.72 && p.potionT >= 0.72 && p.alive) {
+      for (let i = 0; i < 6; i++) {
+        if (this.sparks.length > 300) this.sparks.shift();
+        const ttl = 0.4 + Math.random() * 0.3;
+        this.sparks.push({
+          x: p.x + (Math.random() - 0.5) * 14, y: p.y - 12,
+          vx: (Math.random() - 0.5) * 20, vy: -50 - Math.random() * 40,
+          ttl, ttlMax: ttl, color: i % 2 === 0 ? C.LEAF : C.BONE, size: 2,
+        });
+      }
+    }
+    this.prevPotionT = p.potionT;
+
+    // slash trails from job-aware weapon tip samples while swinging
     if (p.alive && p.swingT >= 0) {
-      const tip = weaponTip(p.x, p.y, p.facing, p.swingT, 1);
-      this.pushTrail('player', tip.x, tip.y, 'player');
+      const tip = weaponTip(p.x, p.y, p.facing, p.swingT, 1, p.job);
+      this.pushTrail('player', tip.x, tip.y, p.job);
+    }
+    // cast trails: blader spin + gem streaks
+    if (p.alive && p.castT >= 0) {
+      const f = castFocus(p.x, p.y, p.facing, p.castT, 1, p.job);
+      this.pushTrail('player-cast', f.x, f.y, p.job);
     }
     for (const e of sim.enemies) {
       if (e.dead || e.swingT < 0) continue;
-      const tip = weaponTip(e.x, e.y, e.facing, e.swingT, e.elite ? 1.7 : 1);
+      const tip = weaponTip(e.x, e.y, e.facing, e.swingT, e.elite ? 1.7 : 1, e.kind);
       this.pushTrail(e.uid, tip.x, tip.y, e.kind);
     }
     // dash afterimages: sample center while dashing
     if (sim.dashT > 0 && p.alive) {
-      this.pushTrail('player', p.x, p.y - 8, 'player');
+      this.pushTrail('player', p.x, p.y - 8, p.job);
     }
 
-    // foot dust from movement speed
-    this.trackDust('player', p.x, p.y, dt, p.alive);
+    // speed dust only for fast bursts (dash); normal footfalls come from
+    // renderer noteStride() synced to the walk cycle.
+    this.trackDust('player', p.x, p.y, dt, p.alive && sim.dashT > 0, 140);
     for (const e of sim.enemies) {
-      if (e.dead) {
-        this.lastPos.delete(e.uid);
-        this.dustCd.delete(e.uid);
-        continue;
-      }
-      this.trackDust(e.uid, e.x, e.y, dt, true);
+      if (!e.dead) continue;
+      this.lastPos.delete(e.uid);
+      this.dustCd.delete(e.uid);
     }
   }
 
@@ -257,11 +394,11 @@ export class VfxSystem {
       this.trails.set(key, arr);
     }
     this.trailColors.set(key, trailColorFor(kind));
-    arr.push({ x, y, ttl: 0.28, width: 3 });
+    arr.push({ x, y, ttl: TEMPO.trailTtl, width: 3 });
     if (arr.length > 24) arr.splice(0, arr.length - 24);
   }
 
-  private trackDust(key: string | number, x: number, y: number, dt: number, active: boolean): void {
+  private trackDust(key: string | number, x: number, y: number, dt: number, active: boolean, minSpeed = 45): void {
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(dt)) return;
     const last = this.lastPos.get(key);
     this.lastPos.set(key, { x, y });
@@ -274,14 +411,14 @@ export class VfxSystem {
       return;
     }
     const speed = Math.hypot(x - last.x, y - last.y) / Math.max(0.001, dt);
-    if (!Number.isFinite(speed) || speed < 45) {
+    if (!Number.isFinite(speed) || speed < minSpeed) {
       this.dustCd.set(key, 0);
       return;
     }
     const cd = (this.dustCd.get(key) ?? 0) - dt;
     if (cd <= 0) {
       this.spawnDust(x, y);
-      this.dustCd.set(key, 0.14);
+      this.dustCd.set(key, TEMPO.footDustCd);
     } else {
       this.dustCd.set(key, cd);
     }
@@ -342,7 +479,7 @@ export class VfxSystem {
         for (let i = 1; i < arr.length; i++) {
           const a = arr[i - 1];
           const b = arr[i];
-          const alpha = Math.max(0, Math.min(1, Math.min(a.ttl, b.ttl) / 0.28));
+          const alpha = Math.max(0, Math.min(1, Math.min(a.ttl, b.ttl) / TEMPO.trailTtl));
           if (alpha <= 0) continue;
           ctx.globalAlpha = alpha * 0.85;
           ctx.strokeStyle = col;
@@ -354,7 +491,7 @@ export class VfxSystem {
         }
         // hot tip dot for bloom
         const tip = arr[arr.length - 1];
-        const ta = Math.max(0, Math.min(1, tip.ttl / 0.28));
+        const ta = Math.max(0, Math.min(1, tip.ttl / TEMPO.trailTtl));
         if (ta > 0.3) {
           ctx.globalAlpha = ta;
           ctx.fillStyle = C.BONE;

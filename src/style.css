@@ -134,7 +134,7 @@ body {
 .bar > div {
   height: 100%;
   width: 100%;
-  transition: width 0.15s linear;
+  transition: width 0.25s linear;
 }
 
 #hp-fill {
@@ -409,12 +409,12 @@ body {
   font-size: 14px;
   font-weight: 700;
   text-align: center;
-  animation: toast-in 0.25s ease-out;
+  animation: toast-in 0.35s ease-out;
 }
 
 .toast.out {
   opacity: 0;
-  transition: opacity 0.4s;
+  transition: opacity 0.5s;
 }
 
 @keyframes toast-in {

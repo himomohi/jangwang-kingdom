@@ -1,4 +1,4 @@
-import { JOB_NAMES, JOB_SKILL, ZONE_NAMES } from '../sim/config';
+import { JOB_NAMES, JOB_SKILL, TEMPO, ZONE_NAMES } from '../sim/config';
 import type { Sim } from '../sim/game';
 import type { Sound } from '../audio/sound';
 
@@ -59,7 +59,7 @@ export class HUD {
     el('btn-mute').textContent = m ? '🔇' : '🔊';
   }
 
-  toast(text: string, ms = 2600): void {
+  toast(text: string, ms = TEMPO.toastDur): void {
     const div = document.createElement('div');
     div.className = 'toast';
     div.textContent = text;

@@ -1,7 +1,14 @@
+import { facingAngle } from '../sim/combat';
 import { C, OUTLINE, JOB_COLORS, ENEMY_COLORS } from './palette';
+import { jobSilhouette, strideSquash, swingAngle } from './anim';
 
 /** Facing: 0=down, 1=up, 2=left, 3=right */
 export type Facing = 0 | 1 | 2 | 3;
+
+/** Animation state hint (interpreted from sim timers by art/anim.ts). */
+export type AnimState =
+  | 'idle' | 'walk' | 'move' | 'attack' | 'skill' | 'hurt'
+  | 'dead' | 'talk' | 'potion' | 'windup';
 
 export interface BodyOpts {
   x: number; // center-bottom (feet) in world px
@@ -19,6 +26,32 @@ export interface BodyOpts {
   scale: number;
   /** night dim 0..1 */
   dim: number;
+  // ---- extended rig pose (all optional; defaults = legacy behavior) ----
+  /** animation state from art/anim.ts */
+  anim?: AnimState | string;
+  /** normalized pose progress 0..1 (-1 when n/a) */
+  stateT?: number;
+  /** skill cast 0..1 progress, -1 = none */
+  cast?: number;
+  /** potion drink 0..1 progress, -1 = none */
+  potion?: number;
+  /** talk pose 0..1 (1 = fresh) */
+  talkK?: number;
+  /** seconds since death (death-pose driver) */
+  deadT?: number;
+  /** 1 = just hit, fades to 0 (hurt lean driver) */
+  hurtK?: number;
+  /** knockback lean in px */
+  leanX?: number;
+  leanY?: number;
+  /** enemy telegraph 0..1 */
+  windupK?: number;
+  /** enemy recover follow-through 0..1 */
+  recoverK?: number;
+  /** dash lean 0..1 (commoner/knight skill) */
+  dashK?: number;
+  /** swing-profile override (e.g. watcher uses knight body + watcher arc) */
+  profile?: string;
 }
 
 function R(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, c: string): void {
@@ -63,123 +96,342 @@ function jobColors(job: string): HumanoidColors {
   }
 }
 
-/** Parametric top-down-ish humanoid. Feet at (x,y). Height ~17*s. */
+type Extras = 'none' | 'knight' | 'blader' | 'arcanist' | 'shrine' | 'bandit' | 'guard' | 'robe' | 'merchant' | 'watcher';
+
+function extrasJob(e: Extras): string {
+  if (e === 'guard') return 'knight';
+  if (e === 'robe') return 'arcanist';
+  if (e === 'merchant') return 'commoner';
+  return e;
+}
+
+/**
+ * Angled weapon shaft drawn as stepped pixel rects (keeps the crisp pixel
+ * look — no canvas rotation). Hand at (hx,hy), angle in screen radians.
+ */
+function shaft(
+  ctx: CanvasRenderingContext2D,
+  hx: number, hy: number, angle: number, len: number, w: number,
+  outline: string, fill: string,
+): { tx: number; ty: number } {
+  const dx = Math.cos(angle);
+  const dy = Math.sin(angle);
+  const steps = Math.max(2, Math.round(len / 2));
+  for (let i = 1; i <= steps; i++) {
+    const d = (i / steps) * len;
+    const x = hx + dx * d;
+    const y = hy + dy * d;
+    R(ctx, x - w / 2 - 0.5, y - 1.2, w + 1, 2.4, outline);
+    R(ctx, x - w / 2, y - 0.8, w, 1.6, fill);
+  }
+  return { tx: hx + dx * len, ty: hy + dy * len };
+}
+
+/** Parametric top-down-ish humanoid. Feet at (x,y). Height ~17*s.
+ * Rigged: idle breathe, facing-aware stride, squash-stretch, job swing arcs,
+ * cast/potion/talk poses, hurt lean, death crumple. All offsets are cheap
+ * arithmetic on the same rect budget as the legacy body (no per-frame
+ * canvases; static palette rects stay inline for the JIT to fold).
+ */
 export function drawHumanoid(
   ctx: CanvasRenderingContext2D,
   o: BodyOpts,
   col: HumanoidColors,
-  extras: 'none' | 'knight' | 'blader' | 'arcanist' | 'shrine' | 'bandit' | 'guard' | 'robe' | 'merchant',
+  extras: Extras,
 ): void {
   const s = o.scale;
   const px = (n: number): number => n * s;
-  const cx = o.x;
-  const feet = o.y;
-  const swing = Math.sin(o.phase) * (o.moving ? 1 : 0);
-  const bob = o.moving ? Math.abs(Math.sin(o.phase)) * px(1) : 0;
-  const top = feet - px(17) + bob;
-  const flash = o.flash ? C.BONE : null;
+  const sil = jobSilhouette(extrasJob(extras));
+  const profile = o.profile ?? extrasJob(extras);
+  const anim = o.anim ?? (o.swing >= 0 ? 'attack' : o.moving ? 'walk' : 'idle');
+  const dead = anim === 'dead';
+  const fallK = dead ? Math.min(1, (o.deadT ?? 0.3) / 0.35) : 0;
 
   const side = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
   const up = o.facing === 1;
+  const fx = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
+  const fy = o.facing === 0 ? 1 : o.facing === 1 ? -1 : 0;
 
-  // legs
-  const legSwing = Math.round(swing * px(2));
-  R(ctx, cx - px(4), feet - px(5) + bob, px(3), px(5) - bob, flash ?? OUTLINE);
-  R(ctx, cx + px(1), feet - px(5) + bob, px(3), px(5) - bob, flash ?? OUTLINE);
-  R(ctx, cx - px(4) + legSwing * 0.4, feet - px(5) + bob, px(3), px(3), flash ?? col.legs);
-  R(ctx, cx + px(1) - legSwing * 0.4, feet - px(5) + bob, px(3), px(3), flash ?? col.legs);
-  // boots
-  R(ctx, cx - px(4) + legSwing * 0.4, feet - px(2) + bob, px(3), px(2), flash ?? col.boots);
-  R(ctx, cx + px(1) - legSwing * 0.4, feet - px(2) + bob, px(3), px(2), flash ?? col.boots);
+  // ---- pose drivers (all 0..1) ----
+  const swingT = o.swing >= 0 ? Math.min(1, o.swing) : -1;
+  const swinging = swingT >= 0;
+  const strikeK = swinging ? Math.sin(swingT * Math.PI) : 0; // 0->1->0
+  const castT = o.cast ?? -1;
+  const castK = castT >= 0 ? Math.sin(Math.min(1, castT) * Math.PI) : 0;
+  const casting = castT >= 0;
+  const potionT = o.potion ?? -1;
+  const drinking = potionT >= 0;
+  const talkK = o.talkK ?? 0;
+  const hurtK = o.hurtK ?? 0;
+  const windupK = o.windupK ?? 0;
+  const dashK = o.dashK ?? 0;
 
-  // torso outline + armor
-  R(ctx, cx - px(5), top + px(7), px(10), px(6), flash ?? OUTLINE);
-  R(ctx, cx - px(4), top + px(8), px(8), px(4), flash ?? col.armor);
-  // belt trim
-  R(ctx, cx - px(4), top + px(11), px(8), px(1), flash ?? col.trim);
+  // ---- root + stride ----
+  const stride = Math.sin(o.phase);
+  const sideView = o.facing === 2 || o.facing === 3;
+  const legAmp = (sideView ? 2.2 : 1.4) * (dead ? 0 : 1);
+  const armAmp = (sideView ? 1.8 : 1.2) * (dead ? 0 : 1);
+  const legSwing = o.moving && !dead ? stride * legAmp : 0;
+  const armSwing = o.moving && !dead ? -stride * armAmp : 0;
+  const bob = o.moving && !dead ? Math.abs(stride) * 1 : 0;
+  const breathe = !o.moving && !dead ? (Math.sin(o.phase) * 0.5 + 0.5) : 0; // 0..1 chest lift
+  const sq = !dead ? strideSquash(o.phase, o.moving) : 0; // +stretch / -squash
+  const sqPx = Math.round(sq * 1.2);
+  const crouch = castK * 1.5 + hurtK * 1 + fallK * 5;
 
-  // arms
-  const armSwing = Math.round(swing * px(1.5));
-  const armY = top + px(8) + (o.moving ? armSwing * 0.3 : 0);
-  R(ctx, cx - px(7), armY, px(2), px(4), flash ?? OUTLINE);
-  R(ctx, cx + px(5), armY, px(2), px(4), flash ?? OUTLINE);
-  R(ctx, cx - px(7), armY, px(2), px(3), flash ?? col.armor);
-  R(ctx, cx + px(5), armY, px(2), px(3), flash ?? col.armor);
-  // hands
-  R(ctx, cx - px(7), armY + px(3), px(2), px(1), flash ?? col.skin);
-  R(ctx, cx + px(5), armY + px(3), px(2), px(1), flash ?? col.skin);
+  const leanX = (o.leanX ?? 0) * s;
+  const leanY = (o.leanY ?? 0) * s;
+  // upper-body tactical offsets (feet stay planted => readable weight shifts)
+  const lungeK = strikeK * 2 - hurtK * 2.5 - windupK * 2 + dashK * 3 + talkK * 1;
+  const lx = fx * lungeK * s + leanX;
+  const ly = fy * (strikeK * 1.5 - hurtK * 2 + dashK * 1) * s + leanY * 0.5;
 
-  // head outline + face
-  R(ctx, cx - px(4) + side * px(1), top + px(1), px(8), px(7), flash ?? OUTLINE);
-  if (up) {
-    R(ctx, cx - px(3) + side * px(1), top + px(2), px(6), px(5), flash ?? col.hair);
+  const cx = o.x + leanX * 0.4;
+  const feet = o.y + leanY * 0.3;
+  const top = feet - px(17) + px(bob) - px(breathe) * 0.8 + px(crouch) - sqPx * s;
+  const flash = o.flash ? C.BONE : null;
+  const wide = Math.round((-sqPx + hurtK * 1 + castK * 0.5 + fallK * 2) * s);
+
+  // ================= legs / robe =================
+  if (sil.robe && !dead) {
+    // arcanist robe skirt (legs hidden): sway reads the stride instead
+    const sway = o.moving ? Math.round(stride * px(1)) : 0;
+    const skirtH = px(7);
+    R(ctx, cx - px(5) + sway * 0.3, feet - skirtH + px(bob), px(10), skirtH, flash ?? OUTLINE);
+    R(ctx, cx - px(4) + sway * 0.3, feet - skirtH + px(bob), px(8), skirtH - 1, flash ?? col.armor);
+    R(ctx, cx - px(4) + sway, feet - px(2), px(3), px(2), flash ?? col.armor);
+    R(ctx, cx + px(1) - sway, feet - px(2), px(3), px(2), flash ?? col.armor);
+    R(ctx, cx - px(3), feet - skirtH + px(bob), px(1), skirtH - 1, flash ?? col.trim);
   } else {
-    R(ctx, cx - px(3) + side * px(1), top + px(2), px(6), px(5), flash ?? col.skin);
-    // eyes
+    const spread = dead ? Math.round(fallK * px(2)) : 0;
+    const legH = Math.max(1, px(5) - px(bob) - px(fallK * 2.5));
+    const legTop = feet - px(5) + px(bob) + px(fallK * 2.5);
+    const lsw = Math.round(legSwing * s);
+    R(ctx, cx - px(4) - spread, legTop, px(3), legH, flash ?? OUTLINE);
+    R(ctx, cx + px(1) + spread, legTop, px(3), legH, flash ?? OUTLINE);
+    R(ctx, cx - px(4) - spread + lsw * 0.4, legTop, px(3), Math.max(1, legH - px(2)), flash ?? col.legs);
+    R(ctx, cx + px(1) + spread - lsw * 0.4, legTop, px(3), Math.max(1, legH - px(2)), flash ?? col.legs);
+    // boots
+    R(ctx, cx - px(4) - spread + lsw * 0.4, feet - px(2), px(3), px(2), flash ?? col.boots);
+    R(ctx, cx + px(1) + spread - lsw * 0.4, feet - px(2), px(3), px(2), flash ?? col.boots);
+  }
+
+  // ================= torso =================
+  const hw = sil.torsoHW + wide * 0.4;
+  const torsoY = top + px(7) + ly * 0.4;
+  const torsoH = Math.max(2, px(6) - px(fallK * 2.5) + sqPx * s * 0.5);
+  R(ctx, cx - px(hw) - 1 + lx * 0.5, torsoY, px(hw * 2) + 2, torsoH, flash ?? OUTLINE);
+  R(ctx, cx - px(hw) + lx * 0.5, torsoY + 1, px(hw * 2), Math.max(1, torsoH - 2), flash ?? col.armor);
+  // belt trim
+  R(ctx, cx - px(hw) + lx * 0.5, torsoY + torsoH - 2, px(hw * 2), 1, flash ?? col.trim);
+
+  // ================= arms =================
+  const armBaseY = torsoY + 1;
+  const lArmY = armBaseY + (o.moving ? armSwing * 0.5 * s : 0) + (casting && extras === 'shrine' ? -px(3) * castK : 0);
+  let rArmY = armBaseY - (o.moving ? armSwing * 0.5 * s : 0) + (casting && extras === 'shrine' ? -px(3) * castK : 0);
+  // weapon-arm raises: swing strike / cast / talk gesture / potion lift
+  const raise = strikeK * px(2) + castK * px(3) + talkK * px(2) + (drinking ? px(2) : 0);
+  rArmY -= raise;
+  const armOut = dead ? Math.round(px(2) * fallK) : Math.round(hurtK * px(1));
+  const armH = Math.max(2, px(4) - px(fallK));
+  // left arm
+  R(ctx, cx - px(hw) - px(2) - armOut + lx * 0.3, lArmY, px(2), armH, flash ?? OUTLINE);
+  R(ctx, cx - px(hw) - px(2) - armOut + lx * 0.3, lArmY, px(2), Math.max(1, armH - 1), flash ?? col.armor);
+  R(ctx, cx - px(hw) - px(2) - armOut + lx * 0.3, lArmY + armH - 1, px(2), 1, flash ?? col.skin);
+  // right (weapon) arm
+  const rArmX = cx + px(hw) + armOut + lx * 0.6;
+  R(ctx, rArmX, rArmY, px(2), armH + raise * 0.4, flash ?? OUTLINE);
+  R(ctx, rArmX, rArmY, px(2), Math.max(1, armH - 1 + raise * 0.4), flash ?? col.armor);
+  R(ctx, rArmX, rArmY + armH - 1 + raise * 0.4, px(2), 1, flash ?? col.skin);
+
+  // ================= head =================
+  const nod = talkK > 0 ? Math.sin(talkK * 12) * talkK * px(1) : 0;
+  const drinkTilt = drinking && potionT > 0.3 && potionT < 0.75 ? -px(1) : 0;
+  const slumpX = dead ? fallK * px(3) : 0;
+  const slumpY = dead ? fallK * px(2) : nod;
+  const headX = cx + side * px(1) + lx * 0.7 + slumpX;
+  const headY = top + px(1) + ly * 0.5 + slumpY + drinkTilt;
+  const headW = px(8);
+  const headH = Math.max(3, px(7) - px(fallK * 2));
+  R(ctx, headX - headW / 2, headY, headW, headH, flash ?? OUTLINE);
+  if (up) {
+    R(ctx, headX - px(3), headY + 1, px(6), Math.max(1, headH - 2), flash ?? col.hair);
+  } else {
+    R(ctx, headX - px(3), headY + 1, px(6), Math.max(1, headH - 2), flash ?? col.skin);
+    // eyes: squeezed when hurt, dead (blood) when fallen
     const ex = side * px(1);
-    R(ctx, cx - px(2) + ex, top + px(4), px(1), px(2), flash ?? OUTLINE);
-    R(ctx, cx + px(1) + ex, top + px(4), px(1), px(2), flash ?? OUTLINE);
+    if (dead) {
+      R(ctx, headX - px(2) + ex, headY + px(3), px(1), px(1), flash ?? C.BLOOD);
+      R(ctx, headX + px(1) + ex, headY + px(3), px(1), px(1), flash ?? C.BLOOD);
+    } else if (hurtK > 0.5) {
+      R(ctx, headX - px(2) + ex, headY + px(4), px(1), 1, flash ?? OUTLINE);
+      R(ctx, headX + px(1) + ex, headY + px(4), px(1), 1, flash ?? OUTLINE);
+    } else {
+      R(ctx, headX - px(2) + ex, headY + px(3), px(1), px(2), flash ?? OUTLINE);
+      R(ctx, headX + px(1) + ex, headY + px(3), px(1), px(2), flash ?? OUTLINE);
+    }
   }
   // hair cap
-  R(ctx, cx - px(4) + side * px(1), top, px(8), px(2), flash ?? col.hair);
-  if (!up) R(ctx, cx - px(3) + side * px(1), top + px(1), px(6), px(1), flash ?? col.hair);
+  R(ctx, headX - headW / 2, headY - px(1), headW, px(2), flash ?? col.hair);
+  if (!up && !dead) R(ctx, headX - px(3), headY, px(6), 1, flash ?? col.hair);
 
-  // weapon in right hand (or left when facing left)
-  const wx = side <= 0 ? cx + px(7) : cx - px(7);
-  const wy = armY + px(1);
-  const swinging = o.swing >= 0;
-  const sw = swinging ? Math.sin(o.swing * Math.PI) : 0;
-  if (extras === 'arcanist' || extras === 'robe' || extras === 'shrine' || extras === 'merchant') {
-    // staff
-    const tilt = swinging ? -sw * px(4) : 0;
-    R(ctx, wx - px(1), wy - px(8) + tilt, px(2), px(12), flash ?? OUTLINE);
-    R(ctx, wx, wy - px(8) + tilt, px(1), px(12), flash ?? C.EMBER);
-    const gemC = extras === 'shrine' ? C.GOLD : extras === 'arcanist' ? C.MIST : C.SAND;
-    R(ctx, wx - px(1), wy - px(10) + tilt, px(3), px(3), flash ?? gemC);
-    // hot gem core for bloom
-    R(ctx, wx, wy - px(9) + tilt, px(1), px(1), flash ?? C.BONE);
-  } else if (extras !== 'none') {
-    // blade
-    const lift = swinging ? -sw * px(8) : 0;
-    const spread = swinging ? sw * px(3) * (side <= 0 ? 1 : -1) : 0;
-    R(ctx, wx - px(1) + spread, wy - px(9) + lift, px(3), px(9), flash ?? OUTLINE);
-    R(ctx, wx + spread, wy - px(8) + lift, px(1), px(7), flash ?? C.FROST);
-    if (swinging) R(ctx, wx + spread, wy - px(8) + lift, px(1), px(7), flash ?? C.BONE);
-    R(ctx, wx - px(2) + spread, wy - px(1) + lift * 0.2, px(5), px(1), flash ?? col.trim);
+  // ================= weapon =================
+  // hand anchor follows the raised weapon arm
+  const handSide = side <= 0 ? 1 : -1;
+  const hx = cx + handSide * px(hw + 2) + lx * 0.8;
+  const hy = rArmY + armH * 0.5;
+  const bladeLen = px(sil.bladeLen);
+  const bladeW = Math.max(1.5, px(sil.bladeW) * 0.7);
+  const showCudgel = extras === 'none' && (swinging || casting);
+  if (sil.staff) {
+    // ---- staff ----
+    if (swinging || casting || windupK > 0.05) {
+      const base = facingAngle(o.facing);
+      let ang: number;
+      let lift = 0;
+      if (casting) {
+        // raised overhead, gem flaring at apex
+        ang = -Math.PI / 2 + side * 0.2;
+        lift = (4 + castK * 3) * s;
+      } else if (windupK > 0.05) {
+        ang = -Math.PI / 2 + side * 0.15;
+        lift = windupK * 5 * s;
+      } else {
+        ang = base + swingAngle(profile, swingT);
+      }
+      const tip = shaft(ctx, hx, hy - lift, ang, bladeLen, bladeW, flash ?? OUTLINE, flash ?? C.EMBER);
+      const gemC = extras === 'shrine' ? C.GOLD : C.MIST;
+      const flare = casting ? castK : strikeK;
+      const gs = (3 + flare * 2) * s;
+      R(ctx, tip.tx - gs / 2, tip.ty - gs / 2, gs, gs, flash ?? gemC);
+      R(ctx, tip.tx - s, tip.ty - s, 2 * s, 2 * s, flash ?? C.BONE);
+    } else {
+      // rest: vertical staff + gem
+      R(ctx, hx - px(1), hy - px(8), px(2), px(12), flash ?? OUTLINE);
+      R(ctx, hx, hy - px(8), 1, px(12), flash ?? C.EMBER);
+      const gemC = extras === 'shrine' ? C.GOLD : C.MIST;
+      R(ctx, hx - px(1), hy - px(10), px(3), px(3), flash ?? gemC);
+      R(ctx, hx, hy - px(9), 1, 1, flash ?? C.BONE);
+    }
+  } else if (extras !== 'none' || showCudgel) {
+    // ---- blade / cudgel ----
+    const cudgel = extras === 'none';
+    const len = cudgel ? px(6) : bladeLen;
+    if (swinging) {
+      const base = facingAngle(o.facing);
+      const ang = base + swingAngle(profile, swingT);
+      // blader skill echo: ghost second arc
+      if (profile === 'blader' && casting) {
+        const echo = shaft(ctx, hx - 3 * s, hy, ang - 0.6, len, bladeW, C.MIST, C.MIST);
+        R(ctx, echo.tx - 1, echo.ty - 1, 2, 2, C.FROST);
+      }
+      const hot = swingT > 0.2 && swingT < 0.8;
+      const tip = shaft(ctx, hx, hy, ang, len, bladeW, flash ?? OUTLINE, flash ?? (hot || casting ? C.BONE : C.FROST));
+      if (hot || casting) R(ctx, tip.tx - 1, tip.ty - 1, 2.5, 2.5, flash ?? C.BONE);
+      // guard at hand
+      R(ctx, hx - px(2), hy - 1, px(4), 2, flash ?? (cudgel ? C.EMBER : col.trim));
+    } else if (windupK > 0.05) {
+      // telegraph: blade raised high, still vertical (reads the windup)
+      const lift = windupK * (profile === 'watcher' ? 7 : 4) * s;
+      R(ctx, hx - bladeW / 2 - 0.5, hy - len - lift, bladeW + 1, len, flash ?? OUTLINE);
+      R(ctx, hx - bladeW / 2, hy - len - lift, bladeW, len, flash ?? C.FROST);
+      if (windupK > 0.6) R(ctx, hx - 1, hy - len - lift, 2, 3, flash ?? C.BONE);
+    } else if (dashK > 0.05) {
+      // dash: blade swept back + speed lines
+      const back = facingAngle(o.facing) + Math.PI * 0.8;
+      shaft(ctx, hx, hy, back, len, bladeW, flash ?? OUTLINE, flash ?? C.FROST);
+      R(ctx, hx - fx * 10 * s - 4, hy - 3, 6, 1.5, C.MIST);
+      R(ctx, hx - fx * 12 * s - 4, hy + 1, 8, 1.5, C.FROST);
+    } else if (casting) {
+      // blade cast (blader triple): blade up, edge flashing
+      R(ctx, hx - bladeW / 2 - 0.5, hy - len - castK * 3 * s, bladeW + 1, len, flash ?? OUTLINE);
+      R(ctx, hx - bladeW / 2, hy - len - castK * 3 * s, bladeW, len, flash ?? C.BONE);
+    } else if (!dead) {
+      // rest: blade up
+      R(ctx, hx - bladeW / 2 - 0.5, hy - len, bladeW + 1, len, flash ?? OUTLINE);
+      R(ctx, hx - bladeW / 2, hy - len + 1, bladeW, len - 1, flash ?? (cudgel ? C.EMBER : C.FROST));
+      R(ctx, hx - px(2), hy - 1, px(4), 1.5, flash ?? (cudgel ? C.SAND : col.trim));
+    }
   }
 
-  // job extras
+  // ================= potion bottle =================
+  if (drinking) {
+    const t = Math.min(1, potionT);
+    // raise (0-.35) -> drink (.35-.7) -> lower (.7-1)
+    const mouthX = headX + (up ? 0 : side * px(1));
+    const mouthY = headY + px(5);
+    let k: number;
+    if (t < 0.35) k = t / 0.35;
+    else if (t < 0.7) k = 1;
+    else k = 1 - (t - 0.7) / 0.3;
+    const ease = k * k * (3 - 2 * k);
+    const bx = hx + (mouthX - hx) * ease;
+    const by = hy + (mouthY - hy) * ease - 2 * s;
+    R(ctx, bx - 1.5 * s, by - 2 * s, 3 * s, 4 * s, flash ?? OUTLINE);
+    R(ctx, bx - s, by - s, 2 * s, 2.5 * s, flash ?? C.FLAME);
+    R(ctx, bx - 0.5 * s, by - 3 * s, 1.5 * s, 1.5 * s, flash ?? C.SAND);
+    if (t > 0.7) {
+      // healing sparkles
+      const a = (t - 0.7) / 0.3;
+      if (a > 0.15) R(ctx, headX - px(5), headY - px(1), 2, 2, C.LEAF);
+      if (a > 0.4) R(ctx, headX + px(4), headY + px(1), 2, 2, C.BONE);
+      if (a > 0.65) R(ctx, headX - px(1), headY - px(4), 2, 2, C.LEAF);
+    }
+  }
+
+  // ================= job extras =================
   if (extras === 'knight' || extras === 'guard') {
-    // helmet crest + shoulder pads
-    R(ctx, cx - px(1) + side * px(1), top - px(2), px(2), px(2), flash ?? C.FLAME);
-    R(ctx, cx - px(7), top + px(7), px(3), px(2), flash ?? col.trim);
-    R(ctx, cx + px(4), top + px(7), px(3), px(2), flash ?? col.trim);
-    // shield on off-hand
-    const sx = side <= 0 ? cx - px(9) : cx + px(6);
-    R(ctx, sx, armY - px(1), px(3), px(6), flash ?? OUTLINE);
-    R(ctx, sx, armY - px(1), px(2), px(5), flash ?? C.SLATE);
-    R(ctx, sx, armY + px(1), px(2), px(1), flash ?? C.GOLD);
+    R(ctx, headX - px(1), headY - px(3), px(2), px(2), flash ?? C.FLAME);
+    const padW = px(3) + (extras === 'knight' ? s : 0);
+    R(ctx, cx - px(hw) - padW + lx * 0.5, torsoY - 1, padW, px(2), flash ?? col.trim);
+    R(ctx, cx + px(hw) - s + lx * 0.5, torsoY - 1, padW, px(2), flash ?? col.trim);
+    // shield on off-hand (knight's reads bigger)
+    const sh = sil.shield || 1;
+    const sx = side <= 0 ? cx - px(hw) - px(4) : cx + px(hw) + px(1);
+    R(ctx, sx, armBaseY - px(1), px(3) * sh, px(6) * sh, flash ?? OUTLINE);
+    R(ctx, sx, armBaseY - px(1), px(2) * sh, px(5) * sh, flash ?? C.SLATE);
+    R(ctx, sx, armBaseY + px(1), px(2) * sh, 1, flash ?? C.GOLD);
+  } else if (extras === 'watcher') {
+    // pauldrons (drop as it dies) + visor slit handled below with pose
+    const drop = fallK * px(3);
+    R(ctx, cx - px(hw) - px(4) + lx * 0.5, torsoY - 1 + drop, px(4), px(3), flash ?? C.DEEP);
+    R(ctx, cx + px(hw) + lx * 0.5, torsoY - 1 + drop, px(4), px(3), flash ?? C.DEEP);
+    R(ctx, headX - px(1), headY - px(3), px(2), px(2), flash ?? C.FLAME);
+    if (!up) {
+      const shake = windupK > 0.5 ? ((Math.floor(o.phase * 9) % 2 === 0 ? 1 : -1) * windupK * s) : 0;
+      const visor = dead ? (fallK < 0.5 ? C.BLOOD : C.VOID) : windupK > 0.7 ? C.BONE : windupK > 0.05 ? C.GOLD : C.FLAME;
+      R(ctx, headX - px(3) + shake, headY + px(3), px(6), Math.max(1, px(1.4)), flash ?? visor);
+      if (!dead) {
+        R(ctx, headX - px(2) + shake, headY + px(3), px(4), Math.max(1, px(1.4)), flash ?? C.GOLD);
+        R(ctx, headX - px(1) + shake, headY + px(3), px(2), 1, C.BONE);
+      }
+    }
   } else if (extras === 'blader') {
-    // scarf flutter
-    const fl = Math.sin(o.phase * 1.7) * px(1);
-    R(ctx, cx - px(6) - (side < 0 ? px(2) : 0), top + px(7) + fl * 0.4, px(4), px(2), flash ?? C.FLAME);
+    // long scarf, double flutter (flares in dash/skill)
+    const flare = 1 + dashK * 1.5 + castK * 0.8 + strikeK * 0.5;
+    const fl1 = Math.sin(o.phase * 1.7) * px(1);
+    const fl2 = Math.sin(o.phase * 2.3 + 1) * px(1);
+    const scarfX = side < 0 ? headX + px(2) : headX - px(2) - px(sil.scarfLen) * flare;
+    R(ctx, scarfX, torsoY + fl1 * 0.4, px(sil.scarfLen) * flare, px(2), flash ?? C.FLAME);
+    R(ctx, scarfX + (side < 0 ? px(2) : px(sil.scarfLen) * flare - px(4)), torsoY + px(2) + fl2 * 0.5, px(3), 1.5, flash ?? C.BLOOD);
   } else if (extras === 'arcanist' || extras === 'robe') {
     // wide-brim hat
-    R(ctx, cx - px(6) + side * px(1), top - px(1), px(12), px(2), flash ?? OUTLINE);
-    R(ctx, cx - px(5) + side * px(1), top - px(1), px(10), px(1), flash ?? C.DUSK);
-    R(ctx, cx - px(2) + side * px(1), top - px(5), px(4), px(4), flash ?? OUTLINE);
-    R(ctx, cx - px(1) + side * px(1), top - px(4), px(2), px(3), flash ?? C.DUSK);
+    R(ctx, headX - px(6), headY - px(2), px(12), px(2), flash ?? OUTLINE);
+    R(ctx, headX - px(5), headY - px(2), px(10), 1, flash ?? C.DUSK);
+    R(ctx, headX - px(2), headY - px(6), px(4), px(4), flash ?? OUTLINE);
+    R(ctx, headX - px(1), headY - px(5), px(2), px(3), flash ?? C.DUSK);
   } else if (extras === 'shrine') {
-    // circlet + veil
-    R(ctx, cx - px(4) + side * px(1), top + px(1), px(8), px(1), flash ?? C.GOLD);
-    R(ctx, cx - px(5) + side * px(1), top + px(2), px(1), px(6), flash ?? C.BONE);
-    R(ctx, cx + px(4) + side * px(1), top + px(2), px(1), px(6), flash ?? C.BONE);
+    // circlet + long veil
+    R(ctx, headX - px(4), headY, px(8), 1, flash ?? C.GOLD);
+    const sway = o.moving ? Math.round(stride * s) : 0;
+    R(ctx, headX - px(5) + sway * 0.3, headY + 1, 1.5, px(8), flash ?? C.BONE);
+    R(ctx, headX + px(4) - sway * 0.3, headY + 1, 1.5, px(8), flash ?? C.BONE);
   } else if (extras === 'bandit') {
     // eye mask + hood
-    if (!up) R(ctx, cx - px(3) + side * px(1), top + px(4), px(6), px(2), flash ?? C.VOID);
-    R(ctx, cx - px(4) + side * px(1), top - px(1), px(8), px(2), flash ?? C.BLOOD);
+    if (!up && !dead) R(ctx, headX - px(3), headY + px(3), px(6), px(2), flash ?? C.VOID);
+    R(ctx, headX - px(4), headY - px(2), px(8), px(2), flash ?? C.BLOOD);
   } else if (extras === 'merchant') {
-    R(ctx, cx - px(4) + side * px(1), top - px(1), px(8), px(1), flash ?? C.GOLD);
+    R(ctx, headX - px(4), headY - px(2), px(8), 1, flash ?? C.GOLD);
   }
 
   // night rim: NW key light keeps silhouettes readable with post OFF
@@ -187,8 +439,8 @@ export function drawHumanoid(
     const rimA = Math.min(0.55, (o.dim - 0.25) * 0.9);
     ctx.save();
     ctx.globalAlpha = rimA;
-    R(ctx, cx - px(4) + side * px(1), top, px(8), px(1), C.FROST);
-    R(ctx, cx - px(5), top + px(7), px(1), px(6), C.MIST);
+    R(ctx, headX - headW / 2, headY - px(1), headW, 1, C.FROST);
+    R(ctx, cx - px(hw) - 1 + lx * 0.5, torsoY, 1, torsoH, C.MIST);
     ctx.restore();
   }
 }
@@ -201,7 +453,7 @@ export function drawPlayer(
   drawShadow(ctx, o.x, o.y + 1, 7 * o.scale);
   const extras = (job === 'knight' || job === 'blader' || job === 'arcanist' || job === 'shrine'
     ? job
-    : 'none') as 'none' | 'knight' | 'blader' | 'arcanist' | 'shrine';
+    : 'none') as Extras;
   drawHumanoid(ctx, o, jobColors(job), extras);
 }
 
@@ -217,26 +469,75 @@ export function drawEnemy(
   const px = (n: number): number => n * s;
   const flash = o.flash ? C.BONE : null;
   const side = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
-  drawShadow(ctx, o.x, o.y + 1, (kind === 'watcher' ? 10 : kind === 'wolf' ? 8 : 6) * s, kind === 'shade' ? 3 : 0);
+  const anim = o.anim ?? (o.moving ? 'move' : 'idle');
+  const dead = anim === 'dead';
+  const fallK = dead ? Math.min(1, (o.deadT ?? 0.4) / (kind === 'watcher' ? 0.6 : 0.3)) : 0;
+  const hurtK = o.hurtK ?? 0;
+  const windupK = o.windupK ?? 0;
+  const recoverK = o.recoverK ?? 0;
+  const swingT = o.swing >= 0 ? Math.min(1, o.swing) : -1;
+  const strikeK = swingT >= 0 ? Math.sin(swingT * Math.PI) : 0;
+  const lx = (o.leanX ?? 0) * s;
+
+  if (kind === 'bandit') {
+    drawShadow(ctx, o.x, o.y + 1, 6 * s);
+    drawHumanoid(
+      ctx,
+      { ...o, profile: 'bandit' },
+      { skin: C.SKIN, hair: C.VOID, armor: C.BLOOD, trim: C.EMBER, legs: C.DEEP, boots: C.VOID },
+      'bandit',
+    );
+    return;
+  }
+  if (kind === 'watcher') {
+    drawShadow(ctx, o.x, o.y + 1, 10 * s);
+    drawHumanoid(
+      ctx,
+      { ...o, profile: 'watcher' },
+      { skin: C.SLATE, hair: C.VOID, armor: C.SLATE, trim: C.FLAME, legs: C.DEEP, boots: C.VOID },
+      'watcher',
+    );
+    return;
+  }
 
   if (kind === 'slime') {
-    const squash = o.moving ? Math.abs(Math.sin(o.phase)) : 0.15;
-    const w = px(11) + squash * px(3);
-    const h = px(8) - squash * px(3);
-    const x0 = o.x - w / 2;
-    const y0 = o.y - h;
+    // ---- hop locomotion: stretch rising, squash on landing ----
+    const hopping = o.moving && !dead;
+    const hopPh = hopping ? Math.abs(Math.sin(o.phase)) : 0;
+    const rising = hopping && Math.cos(o.phase) > 0;
+    const yOff = -hopPh * px(4);
+    const shake = windupK > 0.05 && !dead ? ((Math.floor(o.phase * 14) % 2 === 0 ? 1 : -1) * windupK * px(1)) : 0;
+    const lunge = !dead && o.facing !== 1 && o.facing !== 0 ? strikeK * side * px(4) : 0;
+    let sq = 0.15 + (!o.moving && !dead ? (Math.sin(o.phase * 1.5) * 0.5 + 0.5) * 0.2 : 0);
+    if (hopping) sq += hopPh < 0.3 ? 0.4 : rising ? -0.18 : 0.12;
+    sq += windupK * 0.3 + hurtK * 0.3 + fallK * 0.9;
+    const w = px(11) + sq * px(7);
+    const h = Math.max(2, px(8) - sq * px(6));
+    drawShadow(ctx, o.x, o.y + 1, 6 * s, hopPh * 4);
+    const x0 = o.x - w / 2 + lx + lunge + shake;
+    const y0 = o.y - h + yOff;
     R(ctx, x0 - 1, y0 - 1, w + 2, h + 2, flash ?? OUTLINE);
     R(ctx, x0, y0, w, h, flash ?? pal.body);
-    R(ctx, x0 + 1, y0 + 1, w * 0.35, h * 0.3, flash ?? pal.glow);
-    // hot specular for bloom
-    R(ctx, x0 + 2, y0 + 1, 3, 2, flash ?? C.BONE);
-    // eyes
+    R(ctx, x0 + 1, y0 + 1, w * 0.35, Math.max(1, h * 0.3), flash ?? pal.glow);
+    if (!dead || fallK < 0.5) R(ctx, x0 + 2, y0 + 1, 3, 2, flash ?? C.BONE);
+    // eyes (squeezed when hurt, gone when popped)
     const ex = side * px(2);
     const ey = y0 + h * 0.45;
-    R(ctx, o.x - px(3) + ex, ey, px(2), px(3), flash ?? OUTLINE);
-    R(ctx, o.x + px(1) + ex, ey, px(2), px(3), flash ?? OUTLINE);
-    // crown nub
-    R(ctx, o.x - px(1), y0 - px(2), px(2), px(2), flash ?? pal.dark);
+    if (!dead) {
+      const eyeH = hurtK > 0.4 ? 1 : px(3);
+      R(ctx, o.x - px(3) + ex + lunge, ey, px(2), eyeH, flash ?? OUTLINE);
+      R(ctx, o.x + px(1) + ex + lunge, ey, px(2), eyeH, flash ?? OUTLINE);
+    }
+    // attack maw + landing splat droplets
+    if (strikeK > 0.4 && !dead) {
+      R(ctx, o.x - px(2) + ex + lunge, y0 + h - 3, px(4), 2, flash ?? C.VOID);
+    }
+    if (dead && fallK > 0.3) {
+      R(ctx, x0 - 4, o.y - 2, 3, 2, pal.body);
+      R(ctx, x0 + w + 1, o.y - 2, 3, 2, pal.body);
+    }
+    // crown nub (sinks as it pops)
+    if (!dead || fallK < 0.6) R(ctx, o.x - px(1) + lunge, y0 - px(2), px(2), px(2), flash ?? pal.dark);
     if (o.dim > 0.25 && !o.flash) {
       ctx.save();
       ctx.globalAlpha = Math.min(0.5, (o.dim - 0.25) * 0.8);
@@ -244,81 +545,125 @@ export function drawEnemy(
       ctx.restore();
     }
   } else if (kind === 'wolf') {
-    const run = o.moving ? Math.sin(o.phase) * px(1.5) : 0;
+    // ---- gallop: diagonal leg pairs, body pitch, pounce ----
     const dir = side === 0 ? 1 : side;
-    const x0 = o.x - px(7);
-    const y0 = o.y - px(9);
-    // tail
-    R(ctx, dir > 0 ? x0 - px(3) : x0 + px(14), y0 + px(1) + run * 0.4, px(3), px(2), flash ?? pal.dark);
+    const gallop = o.moving && !dead ? Math.sin(o.phase) : 0;
+    const crouch = windupK * px(2);
+    const pounce = strikeK;
+    const lungeX = dir * pounce * px(6) + lx;
+    const pitch = gallop * px(1.2);
+    const bodyDrop = dead ? px(3) * fallK : 0;
+    drawShadow(ctx, o.x, o.y + 1, 8 * s, pounce * 3);
+    const x0 = o.x - px(7) + lungeX;
+    const y0 = o.y - px(9) + pitch * 0.3 + crouch * 0.6 + bodyDrop - pounce * px(2);
+    // tail: wag idle, stream when running, tucked in windup
+    const wag = !o.moving && !dead ? Math.sin(o.phase * 2) * px(1.5) : 0;
+    const tailY = y0 + px(1) + (o.moving ? -px(1) : 0) + windupK * px(2) + wag;
+    const tailX = dir > 0 ? x0 - px(3) : x0 + px(14);
+    R(ctx, tailX, tailY, px(3), px(2), flash ?? pal.dark);
+    if (dead) {
+      // sprawled: flattened body, legs in the air, head down
+      const bw = px(15);
+      const bh = Math.max(2, px(7) - px(3) * fallK);
+      R(ctx, x0 - 1, y0 + px(2), bw, bh, flash ?? OUTLINE);
+      R(ctx, x0, y0 + px(2), bw - 1, Math.max(1, bh - 1), flash ?? pal.body);
+      for (let i = 0; i < 4; i++) {
+        const legX = x0 + px(2) + i * px(3.5);
+        R(ctx, legX, y0 - px(1) * fallK, px(2), px(3) * fallK + 1, flash ?? pal.dark);
+      }
+      R(ctx, x0 + (dir > 0 ? bw - 2 : -3), y0 + px(3), px(4), px(3), flash ?? pal.body);
+      R(ctx, x0 + (dir > 0 ? bw - 1 : -2), y0 + px(4), 1.5, 1.5, flash ?? C.BLOOD);
+      return;
+    }
     // body
     R(ctx, x0 - 1, y0 - 1, px(15), px(7), flash ?? OUTLINE);
     R(ctx, x0, y0, px(14), px(5), flash ?? pal.body);
-    R(ctx, x0, y0, px(14), px(1), flash ?? pal.glow);
-    // head
-    const hx = dir > 0 ? x0 + px(12) : x0 - px(4);
-    R(ctx, hx - 1, y0 - px(4) - 1 + run * 0.3, px(7), px(7), flash ?? OUTLINE);
-    R(ctx, hx, y0 - px(4) + run * 0.3, px(5), px(5), flash ?? pal.body);
-    // ear
-    R(ctx, hx + (dir > 0 ? px(1) : px(2)), y0 - px(6) + run * 0.3, px(2), px(2), flash ?? pal.dark);
-    // snout + eye (hot gold eye for bloom + night readability)
-    R(ctx, dir > 0 ? hx + px(5) : hx - px(2), y0 - px(1) + run * 0.3, px(2), px(2), flash ?? pal.dark);
-    R(ctx, dir > 0 ? hx + px(3) : hx + px(1), y0 - px(3) + run * 0.3, px(1), px(1), flash ?? C.GOLD);
-    // legs
-    for (let i = 0; i < 4; i++) {
-      const lx = x0 + px(1) + i * px(4) + (i % 2 === 0 ? run : -run) * 0.5;
-      R(ctx, lx, o.y - px(4), px(2), px(4), flash ?? pal.dark);
+    R(ctx, x0, y0, px(14), 1, flash ?? pal.glow);
+    // head (bobs opposite the body, leads the pounce)
+    const hx = (dir > 0 ? x0 + px(12) : x0 - px(4)) + dir * pounce * px(2);
+    const hy = y0 - px(4) - pitch * 0.5 - pounce * px(1);
+    R(ctx, hx - 1, hy - 1, px(7), px(7), flash ?? OUTLINE);
+    R(ctx, hx, hy, px(5), px(5), flash ?? pal.body);
+    R(ctx, hx + (dir > 0 ? px(1) : px(2)), hy - px(2), px(2), px(2), flash ?? pal.dark);
+    // snout + jaw (teeth bared on pounce) + eye (wide in windup)
+    const snX = dir > 0 ? hx + px(5) : hx - px(2);
+    R(ctx, snX, hy + px(3), px(2), px(2), flash ?? pal.dark);
+    if (pounce > 0.45) {
+      R(ctx, snX, hy + px(5), px(2), 1, flash ?? C.BONE);
+      R(ctx, dir > 0 ? hx + px(4) : hx, hy + px(4), px(2), 1, flash ?? C.VOID);
     }
-  } else if (kind === 'bandit') {
-    drawHumanoid(
-      ctx,
-      o,
-      { skin: C.SKIN, hair: C.VOID, armor: C.BLOOD, trim: C.EMBER, legs: C.DEEP, boots: C.VOID },
-      'bandit',
-    );
+    const eyeW = windupK > 0.05 ? 2 : 1;
+    R(ctx, dir > 0 ? hx + px(3) : hx + px(1), hy + px(1), eyeW, windupK > 0.05 ? 2 : 1, flash ?? C.GOLD);
+    // legs: diagonal pairs alternate; pounce reaches forward
+    for (let i = 0; i < 4; i++) {
+      const diag = i % 2 === 0 ? gallop : -gallop;
+      const reach = i < 2 ? pounce * px(3) * dir : -pounce * px(2) * dir;
+      const legX = x0 + px(1) + i * px(4) + diag * px(1.2) + reach;
+      R(ctx, legX, o.y - px(4) + crouch * 0.5, px(2), px(4) - crouch * 0.5, flash ?? pal.dark);
+    }
+    void recoverK;
   } else if (kind === 'shade') {
-    const hover = Math.sin(o.phase * 1.3) * px(1.5);
-    const x0 = o.x;
+    // ---- hover glider: cloak wave, charge orb, dissolve ----
+    const glide = o.moving && !dead ? Math.sin(o.phase * 2) : 0;
+    const hover = (dead ? 0 : Math.sin(o.phase * 1.3) * px(1.5) + glide * px(0.8)) - fallK * px(8);
+    const fx = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
+    const lean = o.moving && !dead ? fx * px(2) : 0;
+    const jitter = hurtK > 0.05 && !dead ? ((Math.floor(o.phase * 20) % 2 === 0 ? 1 : -1) * hurtK * px(1)) : 0;
+    const shrink = 1 - fallK * 0.45;
+    const x0 = o.x + lean + lx * 0.5 + jitter;
     const y0 = o.y - px(12) + hover;
-    // wispy tail
-    R(ctx, x0 - px(4), o.y - px(5) + hover, px(8), px(5), flash ?? pal.dark);
-    R(ctx, x0 - px(2), o.y - px(3) + hover, px(4), px(3), flash ?? OUTLINE);
-    // cloak body
-    R(ctx, x0 - px(6) - 1, y0 - 1, px(12) + 2, px(10) + 2, flash ?? OUTLINE);
-    R(ctx, x0 - px(6), y0, px(12), px(10), flash ?? pal.body);
+    // cloak flares on strike, settles through recover, compresses on charge
+    const flarePx = swingT >= 0 ? strikeK * px(2) : anim === 'attack' ? Math.max(0.2, 1 - recoverK) * px(1.5) : 0;
+    const cw = Math.max(4, px(12) * shrink + flarePx - windupK * px(1));
+    drawShadow(ctx, o.x, o.y + 1, 6 * s, 3 + hover * -0.3);
+    if (dead && fallK > 0.85) return; // fully dissolved (renderer fade covers the rest)
+    // wispy tail (waves while gliding)
+    const wave = dead ? 0 : Math.sin(o.phase * 3) * px(1);
+    R(ctx, x0 - px(4) * shrink + wave * 0.4, o.y - px(5) + hover, px(8) * shrink, px(5) * shrink, flash ?? pal.dark);
+    R(ctx, x0 - px(2) * shrink, o.y - px(3) + hover, px(4) * shrink, Math.max(1, px(3) * shrink), flash ?? OUTLINE);
+    // cloak body (compresses while charging)
+    R(ctx, x0 - cw / 2 - 1, y0 - 1, cw + 2, px(10) * shrink + 2, flash ?? OUTLINE);
+    R(ctx, x0 - cw / 2, y0, cw, px(10) * shrink, flash ?? pal.body);
     // hood
-    R(ctx, x0 - px(5) + side * px(1), y0 - px(3), px(10), px(5), flash ?? OUTLINE);
-    R(ctx, x0 - px(4) + side * px(1), y0 - px(2), px(8), px(4), flash ?? pal.dark);
-    // glowing eyes (hot bone cores for bloom)
-    const ex = side * px(1);
-    R(ctx, x0 - px(2) + ex, y0 + px(1), px(2), px(1), flash ?? C.BONE);
-    R(ctx, x0 + px(1) + ex, y0 + px(1), px(2), px(1), flash ?? C.BONE);
-    if (o.dim > 0.2 && !o.flash) {
+    R(ctx, x0 - px(5) * shrink + side * px(1), y0 - px(3), px(10) * shrink, px(5), flash ?? OUTLINE);
+    R(ctx, x0 - px(4) * shrink + side * px(1), y0 - px(2), px(8) * shrink, px(4), flash ?? pal.dark);
+    // eyes (swell while charging, fade while dissolving)
+    if (!dead || fallK < 0.4) {
+      const ex = side * px(1);
+      const ew = (windupK > 0.05 ? 3 : 2) * s;
+      R(ctx, x0 - px(2) + ex, y0 + px(1), ew, s, flash ?? C.BONE);
+      R(ctx, x0 + px(1) + ex, y0 + px(1), ew, s, flash ?? C.BONE);
+      if (windupK > 0.4) {
+        R(ctx, x0 - px(3) + ex, y0, px(3), px(3), C.FROST);
+        R(ctx, x0 + px(1) + ex, y0, px(3), px(3), C.FROST);
+      }
+    }
+    // charge orb grows in front during telegraph
+    if (windupK > 0.05 && !dead) {
+      const orbR = (1.5 + windupK * 2.5) * s;
+      const ox = x0 + fx * (px(8) + windupK * px(3));
+      const oy = y0 + px(5);
+      R(ctx, ox - orbR - 1, oy - orbR - 1, orbR * 2 + 2, orbR * 2 + 2, flash ?? OUTLINE);
+      R(ctx, ox - orbR, oy - orbR, orbR * 2, orbR * 2, flash ?? C.MIST);
+      R(ctx, ox - 1, oy - 1, 2.5, 2.5, flash ?? C.BONE);
+    }
+    // recoil flare right after the bolt leaves
+    if (swingT >= 0 && !dead) {
+      R(ctx, x0 - cw / 2 - 2 - fx * px(2), y0 + px(2), 2, px(6), flash ?? C.MIST);
+    }
+    // dissolving wisps rise
+    if (dead) {
+      R(ctx, x0 - px(2), y0 - px(5), 2, 4, pal.body);
+      R(ctx, x0 + px(2), y0 - px(8), 2, 3, pal.dark);
+    }
+    if (o.dim > 0.2 && !o.flash && !dead) {
       ctx.save();
       ctx.globalAlpha = 0.35;
+      const ex = side * px(1);
       R(ctx, x0 - px(3) + ex, y0, px(3), px(3), C.FROST);
       R(ctx, x0 + px(1) + ex, y0, px(3), px(3), C.FROST);
       ctx.restore();
     }
-  } else {
-    // watcher — hulking armored sentinel
-    drawHumanoid(
-      ctx,
-      { ...o, scale: o.scale },
-      { skin: C.SLATE, hair: C.VOID, armor: C.SLATE, trim: C.FLAME, legs: C.DEEP, boots: C.VOID },
-      'knight',
-    );
-    // glowing visor slit (layered hot core for bloom)
-    const s2 = o.scale;
-    const top = o.y - 17 * s2 + (o.moving ? Math.abs(Math.sin(o.phase)) * s2 : 0);
-    const side2 = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
-    if (o.facing !== 1) {
-      R(ctx, o.x - 3 * s2 + side2 * s2, top + 4 * s2, 6 * s2, 1.6 * s2, o.flash ? C.BONE : C.FLAME);
-      R(ctx, o.x - 2 * s2 + side2 * s2, top + 4 * s2, 4 * s2, 1.6 * s2, o.flash ? C.BONE : C.GOLD);
-      R(ctx, o.x - 1 * s2 + side2 * s2, top + 4 * s2, 2 * s2, 1.2 * s2, C.BONE);
-    }
-    // pauldrons
-    R(ctx, o.x - 8 * s2, top + 6 * s2, 4 * s2, 3 * s2, o.flash ? C.BONE : C.DEEP);
-    R(ctx, o.x + 4 * s2, top + 6 * s2, 4 * s2, 3 * s2, o.flash ? C.BONE : C.DEEP);
   }
 }
 
@@ -338,10 +683,11 @@ export function drawNPC(
     drawHumanoid(ctx, o, { skin: C.SKIN, hair: C.EMBER, armor: C.EMBER, trim: C.GOLD, legs: C.SAND, boots: C.DEEP }, 'merchant');
   } else {
     drawHumanoid(ctx, o, { skin: C.SKIN, hair: C.BLOOD, armor: C.LEAF, trim: C.BONE, legs: C.MOSS, boots: C.DEEP }, 'none');
-    // headscarf
+    // headscarf (rides the breathe lift so it never floats)
     const s = o.scale;
     const side = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
-    const top = o.y - 17 * s;
+    const breathe = !o.moving ? (Math.sin(o.phase) * 0.5 + 0.5) * 0.8 * s : 0;
+    const top = o.y - 17 * s - breathe;
     R(ctx, o.x - 4 * s + side * s, top - 1 * s, 8 * s, 2 * s, C.BONE);
   }
 }

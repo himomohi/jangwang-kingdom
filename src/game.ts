@@ -457,7 +457,7 @@ export class Game {
           if (this.panels.isOpen()) this.panels.render(this.sim);
           break;
         case 'zone':
-          this.hud.toast(`📍 ${this.renderer.zoneName(this.sim)}`, 1800);
+          this.hud.toast(`📍 ${this.renderer.zoneName(this.sim)}`, 2200);
           this.updateMusicMode(true);
           break;
       }

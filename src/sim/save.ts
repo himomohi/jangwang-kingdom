@@ -62,6 +62,10 @@ export function loadGame(sim: Sim): boolean {
     p.skillCd = 0;
     p.hurtCd = 0;
     p.swingT = -1;
+    p.castT = -1;
+    p.potionT = -1;
+    p.talkT = 0;
+    p.deadT = 0;
     sim.time = typeof data.time === 'number' ? data.time % 1 : 0.3;
     sim.playTime = data.playTime || 0;
     sim.watcherT = typeof data.watcherT === 'number' ? data.watcherT : 30;

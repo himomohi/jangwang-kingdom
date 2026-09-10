@@ -52,6 +52,10 @@ export interface PlayerState {
   skillCdMax: number;
   hurtCd: number;
   swingT: number; // -1 none else 0..1 progress
+  castT: number; // skill-cast pose: -1 none else 0..1 progress
+  potionT: number; // potion-drink pose: -1 none else 0..1 progress
+  talkT: number; // interact/talk pose hold (seconds remaining)
+  deadT: number; // seconds since death (death pose driver)
   shieldT: number; // knight damage reduction timer
   kx: number; // knockback velocity
   ky: number;

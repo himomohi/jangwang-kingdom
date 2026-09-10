@@ -1,8 +1,9 @@
 /** Headless smoke test: sim rules + touch-simulation logic. Runs in node via esbuild. */
+import { enemyAnim, enemyStride, jobSilhouette, playerAnim, strideFootfall, swingAngle, weaponTip } from '../src/art/anim';
 import { PALETTE } from '../src/art/palette';
 import { buildSimInput, VirtualJoystick } from '../src/input/input';
 import { calcDamage } from '../src/sim/combat';
-import { ENEMIES, ITEMS, JOB_SKILL, SHOP_STOCK, TILE, ZONE_NAMES, xpForLevel } from '../src/sim/config';
+import { ENEMIES, ITEMS, JOB_SKILL, SHOP_STOCK, TEMPO, TILE, ZONE_NAMES, xpForLevel } from '../src/sim/config';
 import { Sim } from '../src/sim/game';
 import { rollLoot } from '../src/sim/loot';
 import { mulberry32 } from '../src/sim/world';
@@ -230,6 +231,149 @@ for (const j of jobs) {
   ok('1200-tick soak stable', !threw);
   ok('particles bounded', s.particles.length <= 401);
   ok('enemies bounded', s.enemies.length <= 60);
+}
+
+// ---------- 13. tempo tuning (readable late-90s MMO pace) ----------
+{
+  ok('tempo: player speed down 15-25%', TEMPO.playerBaseSpd >= 72 && TEMPO.playerBaseSpd <= 82);
+  const s = new Sim();
+  ok('tempo: commoner walks at TEMPO speed', s.player.stats.spd === TEMPO.playerBaseSpd);
+  ok('tempo: attack recovery longer', TEMPO.playerAttackCd > 0.38 && TEMPO.playerAttackCd < 0.6);
+  ok('tempo: swing poses readable', TEMPO.playerSwingDur >= 0.26 && TEMPO.enemySwingDur >= 0.3);
+  ok('tempo: i-frames readable', TEMPO.playerHurtCd >= 0.8 && TEMPO.enemyHurtFlash >= 0.3);
+  ok('tempo: camera smoother', TEMPO.cameraFollow < 6 && TEMPO.cameraFollow > 1.5);
+  ok('tempo: chase slowed', TEMPO.enemySpeedMul >= 0.75 && TEMPO.enemySpeedMul < 1);
+  ok('tempo: enemy cadence slower', TEMPO.enemyAtkCdMul > 1 && TEMPO.enemyRecover > 0.3);
+  const w = TEMPO.windup;
+  ok('tempo: telegraphs 0.2-0.4s', w.slime >= 0.2 && w.slime <= 0.4 && w.wolf >= 0.2 && w.wolf <= 0.4 && w.bandit >= 0.2 && w.bandit <= 0.4 && w.shade >= 0.2 && w.shade <= 0.4);
+  ok('tempo: elite telegraph heavier', w.watcher > 0.4);
+  ok('tempo: dash less frantic', TEMPO.dashDur > 0.16 && TEMPO.dashDist / TEMPO.dashDur < 287);
+}
+
+// ---------- 14. animation pose timers (sim drives, renderer interprets) ----------
+{
+  // cast pose
+  const s = new Sim();
+  s.player.job = 'arcanist';
+  s.recompute(true);
+  s.trySkill();
+  ok('anim: arcanist skill starts cast pose', s.player.castT === 0);
+  for (let i = 0; i < 40; i++) s.update(1 / 60, { mx: 0, my: 0, attack: false, skill: false, interact: false, potion: false });
+  ok('anim: cast pose finishes', s.player.castT === -1);
+  // blader drives both swing + cast
+  const b = new Sim();
+  b.player.job = 'blader';
+  b.recompute(true);
+  b.trySkill();
+  ok('anim: blader skill drives swing+cast', b.player.swingT === 0 && b.player.castT === 0);
+  // potion pose
+  const s2 = new Sim();
+  s2.player.hp = 10;
+  s2.tryPotion();
+  ok('anim: potion starts drink pose', s2.player.potionT === 0);
+  for (let i = 0; i < 60; i++) s2.update(1 / 60, { mx: 0, my: 0, attack: false, skill: false, interact: false, potion: false });
+  ok('anim: drink pose finishes', s2.player.potionT === -1);
+  // talk pose via interact near npc
+  const s3 = new Sim();
+  const npc = s3.npcs[0];
+  s3.player.x = npc.x + 10;
+  s3.player.y = npc.y;
+  s3.update(1 / 60, { mx: 0, my: 0, attack: false, skill: false, interact: true, potion: false });
+  ok('anim: interact starts talk pose', s3.player.talkT > 0);
+  // death timer ticks
+  const s4 = new Sim();
+  s4.player.hp = 1;
+  s4.player.hurtCd = 0;
+  s4.damagePlayer(9999, s4.player.x + 10, s4.player.y);
+  ok('anim: death starts deadT', !s4.player.alive && s4.player.deadT === 0);
+  s4.update(1 / 60, { mx: 0, my: 0, attack: false, skill: false, interact: false, potion: false });
+  ok('anim: deadT ticks while dead', s4.player.deadT > 0);
+  s4.respawn();
+  ok('anim: respawn resets poses', s4.player.alive && s4.player.deadT === 0 && s4.player.swingT === -1 && s4.player.castT === -1);
+}
+
+// ---------- 15. animation state machines (art/anim.ts) ----------
+{
+  const s = new Sim();
+  // player: idle -> potion -> skill -> attack -> hurt -> talk priority
+  s.player.potionT = 0.5;
+  ok('anim: potion state wins', playerAnim(s.player, false).state === 'potion');
+  s.player.potionT = -1;
+  s.player.castT = 0.5;
+  ok('anim: skill state', playerAnim(s.player, false).state === 'skill');
+  s.player.castT = -1;
+  s.player.swingT = 0.5;
+  ok('anim: attack state', playerAnim(s.player, false).state === 'attack');
+  s.player.swingT = -1;
+  s.player.hurtCd = TEMPO.playerHurtCd;
+  ok('anim: hurt state on fresh hit', playerAnim(s.player, false).state === 'hurt');
+  s.player.hurtCd = 0;
+  s.player.talkT = 1;
+  ok('anim: talk state', playerAnim(s.player, false).state === 'talk');
+  s.player.talkT = 0;
+  s.player.alive = false;
+  s.player.deadT = 0.2;
+  ok('anim: dead state', playerAnim(s.player, false).state === 'dead');
+  s.player.alive = true;
+  ok('anim: idle fallback', playerAnim(s.player, false).state === 'idle');
+
+  // enemy: windup -> attack -> hurt -> dead
+  const e = s.enemies.find((x) => !x.dead);
+  ok('anim: enemy available', !!e);
+  if (e) {
+    e.ai = 'windup';
+    e.stateT = 0.1;
+    e.hurtCd = 0;
+    ok('anim: enemy windup with progress', enemyAnim(e, false).state === 'windup' && enemyAnim(e, false).windupK > 0);
+    e.ai = 'chase';
+    e.swingT = 0.5;
+    ok('anim: enemy attack', enemyAnim(e, false).state === 'attack');
+    e.swingT = -1;
+    e.hurtCd = TEMPO.enemyHurtFlash;
+    ok('anim: enemy hurt', enemyAnim(e, false).state === 'hurt');
+    e.hurtCd = 0;
+    ok('anim: enemy move/idle split', enemyAnim(e, true).state === 'move' && enemyAnim(e, false).state === 'idle');
+    e.dead = true;
+    e.deadT = 0.1;
+    ok('anim: enemy dead', enemyAnim(e, false).state === 'dead');
+    e.dead = false;
+  }
+
+  // job silhouettes read differently
+  const knight = jobSilhouette('knight');
+  const blader = jobSilhouette('blader');
+  const arc = jobSilhouette('arcanist');
+  ok('anim: knight broad, blader slim', knight.torsoHW > blader.torsoHW);
+  ok('anim: knight shielded, blader scarfed', knight.shield > 0 && blader.scarfLen > 0);
+  ok('anim: arcanist robed + staff', arc.robe && arc.staff);
+
+  // swing arcs differ per job; tips stay finite
+  const angK = swingAngle('knight', 0.5);
+  const angB = swingAngle('blader', 0.5);
+  ok('anim: job swing arcs differ', Math.abs(angK - angB) > 0.05);
+  let tipsFinite = true;
+  for (const job of ['commoner', 'knight', 'blader', 'arcanist', 'shrine'] as JobId[]) {
+    for (const f of [0, 1, 2, 3] as const) {
+      for (const sw of [0, 0.5, 1]) {
+        const tip = weaponTip(100, 100, f, sw, 1, job);
+        if (!finite(tip.x) || !finite(tip.y)) tipsFinite = false;
+      }
+    }
+  }
+  for (const kind of ['slime', 'wolf', 'bandit', 'shade', 'watcher']) {
+    const tip = weaponTip(100, 100, 3, 0.5, 1.7, kind);
+    if (!finite(tip.x) || !finite(tip.y)) tipsFinite = false;
+  }
+  ok('anim: weapon tips finite for all jobs/kinds', tipsFinite);
+
+  // footfall sync fires on zero crossings only
+  ok('anim: footfall on crossing', strideFootfall(-0.2, 0.2, true) && strideFootfall(0.3, -0.1, true));
+  ok('anim: no footfall without motion', !strideFootfall(-0.2, 0.2, false) && !strideFootfall(0.1, 0.4, true));
+
+  // elite strides heavier
+  const elite = enemyStride('watcher', true);
+  const normal = enemyStride('wolf', false);
+  ok('anim: elite heavier stride', elite.rateMul < normal.rateMul && elite.squashAmp > normal.squashAmp);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

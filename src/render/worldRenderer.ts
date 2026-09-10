@@ -4,12 +4,13 @@
  * houses/pickups/elite), night cycle capped so silhouettes read with post OFF.
  */
 import { C, PALETTE } from '../art/palette';
+import { enemyAnim, enemyStride, playerAnim, playerLocomotion } from '../art/anim';
 import {
   drawEnemy, drawFlowers, drawGrassTuft, drawHouse, drawLamp, drawNPC,
   drawPickup, drawPlayer, drawProjectile, drawRock, drawRuin, drawTree,
   type Facing,
 } from '../art/sprites';
-import { TILE, WORLD_W, WORLD_H, ZONE_NAMES } from '../sim/config';
+import { TEMPO, TILE, WORLD_W, WORLD_H, ZONE_NAMES } from '../sim/config';
 import { facingAngle } from '../sim/combat';
 import { T_FLOWER, T_GRASS, T_PLAZA, T_ROAD, T_RUIN, T_SAND, T_TREE, T_WALL, T_WATER } from '../sim/world';
 import type { Sim } from '../sim/game';
@@ -89,12 +90,12 @@ export class WorldRenderer {
 
   addShake(power: number): void {
     this.shakePower = Math.max(this.shakePower, power);
-    this.shakeT = 0.3;
+    this.shakeT = TEMPO.shakeDur;
   }
 
   addFlash(color: string): void {
     this.flashColor = color;
-    this.flashT = 0.35;
+    this.flashT = TEMPO.flashDur;
   }
 
   /** Forward sim events to renderer-only VFX (never decides damage). */
@@ -110,7 +111,7 @@ export class WorldRenderer {
     this.flashT = 0;
   }
 
-  private animFor(key: number | string, x: number, y: number, dt: number): AnimEntry {
+  private animFor(key: number | string, x: number, y: number, dt: number, rateMul = 1): AnimEntry {
     let e = this.anim.get(key);
     if (!e) {
       e = { phase: Math.random() * 6, lx: x, ly: y, moving: false };
@@ -119,8 +120,8 @@ export class WorldRenderer {
     }
     const moved = Math.hypot(x - e.lx, y - e.ly);
     e.moving = moved > dt * 8;
-    if (e.moving) e.phase += dt * 11;
-    else e.phase += dt * 2.5;
+    if (e.moving) e.phase += dt * TEMPO.walkPhaseRate * rateMul;
+    else e.phase += dt * TEMPO.idlePhaseRate * rateMul;
     e.lx = x;
     e.ly = y;
     return e;
@@ -140,7 +141,7 @@ export class WorldRenderer {
     const vh = this.viewH / this.zoom;
     const tx = Math.max(vw / 2, Math.min(WORLD_W * TILE - vw / 2, p.x));
     const ty = Math.max(vh / 2, Math.min(WORLD_H * TILE - vh / 2, p.y - 10));
-    const k = Math.min(1, dt * 6);
+    const k = Math.min(1, dt * TEMPO.cameraFollow);
     this.camX += (tx - this.camX) * (this.camX === 0 ? 1 : k);
     this.camY += (ty - this.camY) * (this.camY === 0 ? 1 : k);
 
@@ -149,7 +150,7 @@ export class WorldRenderer {
     let shy = 0;
     if (this.shakeT > 0) {
       this.shakeT -= dt;
-      const m = this.shakePower * (this.shakeT / 0.3);
+      const m = this.shakePower * (this.shakeT / TEMPO.shakeDur);
       shx = (Math.random() - 0.5) * 2 * m;
       shy = (Math.random() - 0.5) * 2 * m;
       if (this.shakeT <= 0) this.shakePower = 0;
@@ -218,17 +219,27 @@ export class WorldRenderer {
     }
     for (const e of sim.enemies) {
       if (!this.onScreen(e.x, e.y, 80)) continue;
-      const a = this.animFor(e.uid, e.x, e.y, dt);
+      const stride = enemyStride(e.kind, e.elite);
+      const a = this.animFor(e.uid, e.x, e.y, dt, stride.rateMul);
+      const moving = a.moving || e.ai === 'chase' || e.ai === 'return';
+      this.vfx.noteStride(e.uid, a.phase, moving && !e.dead, e.x, e.y, e.elite ? 1.7 : 1);
+      const pose = enemyAnim(e, moving);
       items.push({
         y: e.y,
         draw: () => {
           ctx.save();
-          if (e.dead) ctx.globalAlpha = Math.max(0, 1 - e.deadT * 2);
-          this.overlay.drawEnemy(ctx, e.kind, e.x, e.y, e.elite ? 1.7 : 1, a.phase, a.moving || e.ai === 'chase');
+          if (e.dead) {
+            const fade = e.elite ? TEMPO.enemyDeadFadeElite : TEMPO.enemyDeadFade;
+            ctx.globalAlpha = Math.max(0, 1 - e.deadT / fade);
+          }
+          this.overlay.drawEnemy(ctx, e.kind, e.x, e.y, e.elite ? 1.7 : 1, a.phase, moving);
           drawEnemy(ctx, e.kind, {
             x: e.x, y: e.y, facing: e.facing as Facing, phase: a.phase,
-            moving: a.moving || e.ai === 'chase', swing: e.swingT,
+            moving, swing: e.swingT,
             flash: e.hurtCd > 0, scale: e.elite ? 1.7 : 1, dim: dark,
+            anim: pose.state, stateT: pose.t, hurtK: pose.hurtK,
+            windupK: pose.windupK, recoverK: pose.recoverK,
+            deadT: e.deadT, leanX: pose.leanX, leanY: pose.leanY,
           });
           ctx.restore();
           if (!e.dead && e.hp < e.maxHp) {
@@ -244,26 +255,38 @@ export class WorldRenderer {
         },
       });
     }
-    if (p.alive || Math.floor(t * 4) % 2 === 0) {
+    // player: always drawn (death pose persists behind the over-screen; no blink)
+    {
       const a = this.animFor('player', p.x, p.y, dt);
+      this.vfx.noteStride('player', a.phase, a.moving && p.alive, p.x, p.y, 1);
+      const dashing = sim.dashT > 0;
+      const pose = playerLocomotion(playerAnim(p, dashing), a.moving);
+      // fresh hits flash solid, then slow-blink through remaining i-frames
+      const freshHit = p.hurtCd > 0 && p.hurtCd <= TEMPO.playerHurtCd && p.hurtCd > TEMPO.playerHurtCd - 0.28;
+      const flash = p.alive && (freshHit || (p.hurtCd > 0 && Math.floor(t * 10) % 2 === 0));
+      const dashK = dashing ? Math.min(1, sim.dashT / TEMPO.dashDur) : 0;
       items.push({
         y: p.y,
         draw: () => {
-          if (!p.alive) ctx.globalAlpha = 0.5;
+          ctx.save();
+          if (!p.alive) ctx.globalAlpha = Math.max(0.55, 1 - (p.deadT / TEMPO.playerDeadFade) * 0.45);
           this.overlay.drawPlayer(ctx, p.x, p.y, 1, p.job, a.phase, a.moving);
           drawPlayer(ctx, {
             x: p.x, y: p.y, facing: p.facing as Facing, phase: a.phase,
             moving: a.moving, swing: p.swingT,
-            flash: p.hurtCd > 0 && Math.floor(t * 20) % 2 === 0, scale: 1, dim: dark,
+            flash, scale: 1, dim: dark,
+            anim: pose.state, stateT: pose.t, cast: p.castT, potion: p.potionT,
+            talkK: pose.talkK, deadT: p.deadT, hurtK: pose.hurtK,
+            leanX: pose.leanX, leanY: pose.leanY, dashK,
           }, p.job);
-          if (p.shieldT > 0) {
+          if (p.shieldT > 0 && p.alive) {
             ctx.strokeStyle = C.MIST;
             ctx.lineWidth = 2;
             ctx.beginPath();
             ctx.arc(p.x, p.y - 9, 14 + Math.sin(t * 8), 0, Math.PI * 2);
             ctx.stroke();
           }
-          ctx.globalAlpha = 1;
+          ctx.restore();
         },
       });
     }
@@ -310,7 +333,7 @@ export class WorldRenderer {
     // damage/event flash
     if (this.flashT > 0) {
       this.flashT -= dt;
-      const a = Math.max(0, this.flashT / 0.35) * 0.35;
+      const a = Math.max(0, this.flashT / TEMPO.flashDur) * 0.35;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.fillStyle = this.flashColor === 'gold' ? `rgba(242,193,78,${a})` : `rgba(225,78,43,${a})`;
       ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
