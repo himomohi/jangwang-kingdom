@@ -26,10 +26,15 @@ function R(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: nu
   ctx.fillRect(Math.round(x), Math.round(y), Math.ceil(w), Math.ceil(h));
 }
 
-export function drawShadow(ctx: CanvasRenderingContext2D, x: number, y: number, r: number): void {
-  ctx.fillStyle = 'rgba(16,24,40,0.35)';
+export function drawShadow(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, height = 0): void {
+  // NW key light => shadows fall to SE. Higher objects offset further + fade.
+  const dx = 2 + height * 0.45;
+  const dy = 1 + height * 0.22;
+  const alpha = Math.max(0.12, 0.35 - height * 0.022);
+  const rr = Math.max(1.5, r * (1 - height * 0.015));
+  ctx.fillStyle = `rgba(16,24,40,${alpha.toFixed(3)})`;
   ctx.beginPath();
-  ctx.ellipse(Math.round(x), Math.round(y), r, Math.max(2, r * 0.38), 0, 0, Math.PI * 2);
+  ctx.ellipse(Math.round(x + dx), Math.round(y + dy), rr, Math.max(2, rr * 0.38), 0, 0, Math.PI * 2);
   ctx.fill();
 }
 
@@ -131,12 +136,15 @@ export function drawHumanoid(
     R(ctx, wx, wy - px(8) + tilt, px(1), px(12), flash ?? C.EMBER);
     const gemC = extras === 'shrine' ? C.GOLD : extras === 'arcanist' ? C.MIST : C.SAND;
     R(ctx, wx - px(1), wy - px(10) + tilt, px(3), px(3), flash ?? gemC);
+    // hot gem core for bloom
+    R(ctx, wx, wy - px(9) + tilt, px(1), px(1), flash ?? C.BONE);
   } else if (extras !== 'none') {
     // blade
     const lift = swinging ? -sw * px(8) : 0;
     const spread = swinging ? sw * px(3) * (side <= 0 ? 1 : -1) : 0;
     R(ctx, wx - px(1) + spread, wy - px(9) + lift, px(3), px(9), flash ?? OUTLINE);
     R(ctx, wx + spread, wy - px(8) + lift, px(1), px(7), flash ?? C.FROST);
+    if (swinging) R(ctx, wx + spread, wy - px(8) + lift, px(1), px(7), flash ?? C.BONE);
     R(ctx, wx - px(2) + spread, wy - px(1) + lift * 0.2, px(5), px(1), flash ?? col.trim);
   }
 
@@ -173,6 +181,16 @@ export function drawHumanoid(
   } else if (extras === 'merchant') {
     R(ctx, cx - px(4) + side * px(1), top - px(1), px(8), px(1), flash ?? C.GOLD);
   }
+
+  // night rim: NW key light keeps silhouettes readable with post OFF
+  if (o.dim > 0.25 && !o.flash) {
+    const rimA = Math.min(0.55, (o.dim - 0.25) * 0.9);
+    ctx.save();
+    ctx.globalAlpha = rimA;
+    R(ctx, cx - px(4) + side * px(1), top, px(8), px(1), C.FROST);
+    R(ctx, cx - px(5), top + px(7), px(1), px(6), C.MIST);
+    ctx.restore();
+  }
 }
 
 export function drawPlayer(
@@ -199,7 +217,7 @@ export function drawEnemy(
   const px = (n: number): number => n * s;
   const flash = o.flash ? C.BONE : null;
   const side = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
-  drawShadow(ctx, o.x, o.y + 1, (kind === 'watcher' ? 10 : kind === 'wolf' ? 8 : 6) * s);
+  drawShadow(ctx, o.x, o.y + 1, (kind === 'watcher' ? 10 : kind === 'wolf' ? 8 : 6) * s, kind === 'shade' ? 3 : 0);
 
   if (kind === 'slime') {
     const squash = o.moving ? Math.abs(Math.sin(o.phase)) : 0.15;
@@ -210,6 +228,8 @@ export function drawEnemy(
     R(ctx, x0 - 1, y0 - 1, w + 2, h + 2, flash ?? OUTLINE);
     R(ctx, x0, y0, w, h, flash ?? pal.body);
     R(ctx, x0 + 1, y0 + 1, w * 0.35, h * 0.3, flash ?? pal.glow);
+    // hot specular for bloom
+    R(ctx, x0 + 2, y0 + 1, 3, 2, flash ?? C.BONE);
     // eyes
     const ex = side * px(2);
     const ey = y0 + h * 0.45;
@@ -217,6 +237,12 @@ export function drawEnemy(
     R(ctx, o.x + px(1) + ex, ey, px(2), px(3), flash ?? OUTLINE);
     // crown nub
     R(ctx, o.x - px(1), y0 - px(2), px(2), px(2), flash ?? pal.dark);
+    if (o.dim > 0.25 && !o.flash) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(0.5, (o.dim - 0.25) * 0.8);
+      R(ctx, x0, y0, w, 1, C.FROST);
+      ctx.restore();
+    }
   } else if (kind === 'wolf') {
     const run = o.moving ? Math.sin(o.phase) * px(1.5) : 0;
     const dir = side === 0 ? 1 : side;
@@ -234,9 +260,9 @@ export function drawEnemy(
     R(ctx, hx, y0 - px(4) + run * 0.3, px(5), px(5), flash ?? pal.body);
     // ear
     R(ctx, hx + (dir > 0 ? px(1) : px(2)), y0 - px(6) + run * 0.3, px(2), px(2), flash ?? pal.dark);
-    // snout + eye
+    // snout + eye (hot gold eye for bloom + night readability)
     R(ctx, dir > 0 ? hx + px(5) : hx - px(2), y0 - px(1) + run * 0.3, px(2), px(2), flash ?? pal.dark);
-    R(ctx, dir > 0 ? hx + px(3) : hx + px(1), y0 - px(3) + run * 0.3, px(1), px(1), flash ?? C.FLAME);
+    R(ctx, dir > 0 ? hx + px(3) : hx + px(1), y0 - px(3) + run * 0.3, px(1), px(1), flash ?? C.GOLD);
     // legs
     for (let i = 0; i < 4; i++) {
       const lx = x0 + px(1) + i * px(4) + (i % 2 === 0 ? run : -run) * 0.5;
@@ -262,10 +288,17 @@ export function drawEnemy(
     // hood
     R(ctx, x0 - px(5) + side * px(1), y0 - px(3), px(10), px(5), flash ?? OUTLINE);
     R(ctx, x0 - px(4) + side * px(1), y0 - px(2), px(8), px(4), flash ?? pal.dark);
-    // glowing eyes
+    // glowing eyes (hot bone cores for bloom)
     const ex = side * px(1);
-    R(ctx, x0 - px(2) + ex, y0 + px(1), px(2), px(1), flash ?? pal.glow);
-    R(ctx, x0 + px(1) + ex, y0 + px(1), px(2), px(1), flash ?? pal.glow);
+    R(ctx, x0 - px(2) + ex, y0 + px(1), px(2), px(1), flash ?? C.BONE);
+    R(ctx, x0 + px(1) + ex, y0 + px(1), px(2), px(1), flash ?? C.BONE);
+    if (o.dim > 0.2 && !o.flash) {
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      R(ctx, x0 - px(3) + ex, y0, px(3), px(3), C.FROST);
+      R(ctx, x0 + px(1) + ex, y0, px(3), px(3), C.FROST);
+      ctx.restore();
+    }
   } else {
     // watcher — hulking armored sentinel
     drawHumanoid(
@@ -274,12 +307,14 @@ export function drawEnemy(
       { skin: C.SLATE, hair: C.VOID, armor: C.SLATE, trim: C.FLAME, legs: C.DEEP, boots: C.VOID },
       'knight',
     );
-    // glowing visor slit
+    // glowing visor slit (layered hot core for bloom)
     const s2 = o.scale;
     const top = o.y - 17 * s2 + (o.moving ? Math.abs(Math.sin(o.phase)) * s2 : 0);
     const side2 = o.facing === 2 ? -1 : o.facing === 3 ? 1 : 0;
     if (o.facing !== 1) {
       R(ctx, o.x - 3 * s2 + side2 * s2, top + 4 * s2, 6 * s2, 1.6 * s2, o.flash ? C.BONE : C.FLAME);
+      R(ctx, o.x - 2 * s2 + side2 * s2, top + 4 * s2, 4 * s2, 1.6 * s2, o.flash ? C.BONE : C.GOLD);
+      R(ctx, o.x - 1 * s2 + side2 * s2, top + 4 * s2, 2 * s2, 1.2 * s2, C.BONE);
     }
     // pauldrons
     R(ctx, o.x - 8 * s2, top + 6 * s2, 4 * s2, 3 * s2, o.flash ? C.BONE : C.DEEP);
@@ -321,21 +356,22 @@ export function drawPickup(
   t: number,
 ): void {
   const bob = Math.sin(t * 4 + x) * 1.5;
-  drawShadow(ctx, x, y + 1, 5);
+  drawShadow(ctx, x, y + 1, 5, 2);
   if (kind === 'gold') {
     R(ctx, x - 4, y - 7 + bob, 8, 6, OUTLINE);
     R(ctx, x - 3, y - 6 + bob, 6, 4, C.GOLD);
-    R(ctx, x - 1, y - 5 + bob, 2, 2, C.BONE);
+    R(ctx, x - 2, y - 5 + bob, 3, 2, C.BONE);
   } else if (kind === 'potion') {
     R(ctx, x - 3, y - 8 + bob, 6, 7, OUTLINE);
     R(ctx, x - 2, y - 6 + bob, 4, 4, C.FLAME);
-    R(ctx, x - 2, y - 6 + bob, 4, 1, C.BONE);
+    R(ctx, x - 2, y - 6 + bob, 4, 2, C.BONE);
     R(ctx, x - 1, y - 10 + bob, 2, 3, C.SAND);
   } else {
     R(ctx, x - 5, y - 7 + bob, 10, 6, OUTLINE);
     R(ctx, x - 4, y - 6 + bob, 8, 4, C.MIST);
-    R(ctx, x - 4, y - 6 + bob, 8, 1, C.FROST);
+    R(ctx, x - 4, y - 6 + bob, 8, 2, C.FROST);
     R(ctx, x - 1, y - 6 + bob, 2, 4, C.GOLD);
+    R(ctx, x - 1, y - 6 + bob, 2, 2, C.BONE);
   }
 }
 
@@ -347,8 +383,20 @@ export function drawProjectile(
   y: number,
   t: number,
 ): void {
+  // height shadow on ground below (projectiles fly high)
+  drawShadow(ctx, x, y + 9, 3, 7);
   const c = holy ? C.GOLD : friendly ? C.EMBER : C.DUSK;
+  const halo = holy ? C.GOLD : friendly ? C.GOLD : C.MIST;
   const r = 3 + Math.sin(t * 18) * 0.8;
+  // additive halo so bloom catches magic even before post threshold
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.35;
+  ctx.fillStyle = halo;
+  ctx.beginPath();
+  ctx.arc(Math.round(x), Math.round(y), Math.ceil(r + 3), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
   ctx.fillStyle = OUTLINE;
   ctx.beginPath();
   ctx.arc(Math.round(x), Math.round(y), Math.ceil(r + 1.5), 0, Math.PI * 2);
@@ -357,8 +405,9 @@ export function drawProjectile(
   ctx.beginPath();
   ctx.arc(Math.round(x), Math.round(y), Math.ceil(r), 0, Math.PI * 2);
   ctx.fill();
+  // hot white core for bloom
   ctx.fillStyle = C.BONE;
-  ctx.fillRect(Math.round(x) - 1, Math.round(y) - 1, 2, 2);
+  ctx.fillRect(Math.round(x) - 1, Math.round(y) - 1, 3, 3);
 }
 
 /** Tree: cold pine. Base at (x,y), ~tile sized. */
@@ -406,8 +455,9 @@ export function drawLamp(ctx: CanvasRenderingContext2D, x: number, y: number, t:
   R(ctx, x, y - 16, 1, 16, C.SLATE);
   R(ctx, x - 4, y - 22, 9, 7, OUTLINE);
   const flick = Math.sin(t * 9 + x * 0.3) * 0.5 + 0.5;
-  R(ctx, x - 3, y - 21, 7, 5, flick > 0.5 ? C.GOLD : C.EMBER);
-  R(ctx, x - 1, y - 21, 3, 5, C.BONE);
+  // warm glass + hot bone core for bloom
+  R(ctx, x - 3, y - 21, 7, 5, flick > 0.4 ? C.GOLD : C.EMBER);
+  R(ctx, x - 2, y - 20, 5, 4, C.BONE);
   R(ctx, x - 5, y - 24, 11, 2, OUTLINE);
 }
 
@@ -445,11 +495,13 @@ export function drawHouse(
   R(ctx, x + w / 2 - dw / 2, y + h - 20, dw, 20, OUTLINE);
   R(ctx, x + w / 2 - dw / 2 + 2, y + h - 18, dw - 4, 18, C.DEEP);
   R(ctx, x + w / 2 + 1, y + h - 10, 2, 2, C.GOLD);
-  // windows (warm lit)
+  // windows (warm lit + hot glint for bloom)
   R(ctx, x + 6, y + roofH + 4, 8, 8, OUTLINE);
   R(ctx, x + 7, y + roofH + 5, 6, 6, C.GOLD);
+  R(ctx, x + 7, y + roofH + 5, 2, 2, C.BONE);
   R(ctx, x + w - 14, y + roofH + 4, 8, 8, OUTLINE);
   R(ctx, x + w - 13, y + roofH + 5, 6, 6, C.GOLD);
+  R(ctx, x + w - 13, y + roofH + 5, 2, 2, C.BONE);
   if (sign) {
     R(ctx, x + w / 2 - 10, y + roofH - 14, 20, 10, OUTLINE);
     R(ctx, x + w / 2 - 9, y + roofH - 13, 18, 8, C.DEEP);

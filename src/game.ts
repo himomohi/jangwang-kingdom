@@ -107,6 +107,7 @@ export class Game {
     this.dialog.onChoice = (action) => this.onDialogChoice(action);
 
     this.wireScreens();
+    this.wirePostSettings();
     this.showScreen('title');
     (el('btn-continue') as HTMLButtonElement).disabled = !hasSave();
 
@@ -153,6 +154,63 @@ export class Game {
     click('btn-quit-title', () => this.toTitle());
   }
 
+  /** PostFX toggles: bloom/CRT/quality/intensity, persisted in localStorage. */
+  private wirePostSettings(): void {
+    const bloomBtn = el('btn-bloom') as HTMLButtonElement | null;
+    const crtBtn = el('btn-crt') as HTMLButtonElement | null;
+    const qBtn = el('btn-quality') as HTMLButtonElement | null;
+    const range = el('bloom-range') as HTMLInputElement | null;
+    const val = el('bloom-val') as HTMLElement | null;
+    const refresh = (): void => {
+      const s = this.post.getSettings();
+      if (bloomBtn) {
+        bloomBtn.textContent = s.bloom ? '🌟 블룸 ON' : '🌟 블룸 OFF';
+        bloomBtn.classList.toggle('off', !s.bloom);
+      }
+      if (crtBtn) {
+        crtBtn.textContent = s.crt ? '📺 CRT ON' : '📺 CRT OFF';
+        crtBtn.classList.toggle('off', !s.crt);
+      }
+      if (qBtn) qBtn.textContent = `✨ 화질: ${s.quality}`;
+      if (range) range.value = String(Math.round(s.intensity * 100));
+      if (val) val.textContent = s.intensity.toFixed(1);
+    };
+    bloomBtn?.addEventListener('click', () => {
+      this.post.toggleBloom();
+      this.sound.sfx('ui');
+      refresh();
+    });
+    crtBtn?.addEventListener('click', () => {
+      this.post.toggleCrt();
+      this.sound.sfx('ui');
+      refresh();
+    });
+    qBtn?.addEventListener('click', () => {
+      this.post.cycleQuality();
+      this.sound.sfx('ui');
+      refresh();
+      this.hud.toast(`✨ 화질: ${this.post.getSettings().quality} (${this.post.getPassList().join(' → ')})`, 2200);
+    });
+    range?.addEventListener('input', () => {
+      this.post.setIntensity(Number(range.value) / 100);
+      refresh();
+    });
+    window.addEventListener('keydown', (e) => {
+      if (e.repeat) return;
+      if (e.code === 'KeyB') {
+        this.post.toggleBloom();
+        refresh();
+      } else if (e.code === 'KeyV') {
+        this.post.toggleCrt();
+        refresh();
+      } else if (e.code === 'KeyG') {
+        this.post.cycleQuality();
+        refresh();
+      }
+    });
+    refresh();
+  }
+
   private showScreen(which: 'title' | 'help' | 'over' | 'pause' | null): void {
     for (const id of ['title-screen', 'help-screen', 'over-screen', 'pause-screen']) {
       el(id).classList.add('hidden');
@@ -178,6 +236,7 @@ export class Game {
     this.acc = 0;
     this.renderer.camX = 0;
     this.renderer.camY = 0;
+    this.renderer.resetFx();
     this.sound.ensure();
     this.updateMusicMode(true);
     this.hud.toast(`📍 ${this.renderer.zoneName(this.sim)}`, 2000);
@@ -372,6 +431,8 @@ export class Game {
     if (this.sim.events.length === 0) return;
     const evs = this.sim.events.splice(0, this.sim.events.length);
     for (const e of evs) {
+      // renderer-only VFX (never decides damage)
+      this.renderer.handleSimEvent(e, this.sim);
       switch (e.t) {
         case 'sfx':
           this.sound.sfx(e.id);

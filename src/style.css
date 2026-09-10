@@ -595,6 +595,55 @@ body {
   flex: none;
 }
 
+.mini-btn.off {
+  opacity: 0.55;
+  border-color: var(--slate);
+}
+
+#post-settings {
+  width: min(340px, 86vw);
+  background: var(--deep);
+  border: 2px solid var(--slate);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+#post-settings h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--gold);
+}
+
+.post-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+.post-btn {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  padding: 6px 4px;
+}
+
+#bloom-range {
+  flex: 1;
+  min-width: 80px;
+  accent-color: var(--gold);
+  min-height: 32px;
+}
+
+#bloom-val {
+  min-width: 28px;
+  text-align: right;
+  color: var(--sand);
+  font-weight: 700;
+}
+
 .panel-hint {
   font-size: 12px;
   color: var(--mist);
