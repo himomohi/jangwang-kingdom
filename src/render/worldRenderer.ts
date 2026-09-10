@@ -195,7 +195,7 @@ export class WorldRenderer {
         draw: () => {
           ctx.save();
           if (e.dead) ctx.globalAlpha = Math.max(0, 1 - e.deadT * 2);
-          this.overlay.drawEnemy(ctx, e.kind, e.x, e.y, e.elite ? 1.7 : 1);
+          this.overlay.drawEnemy(ctx, e.kind, e.x, e.y, e.elite ? 1.7 : 1, a.phase, a.moving || e.ai === 'chase');
           drawEnemy(ctx, e.kind, {
             x: e.x, y: e.y, facing: e.facing as Facing, phase: a.phase,
             moving: a.moving || e.ai === 'chase', swing: e.swingT,
@@ -221,7 +221,7 @@ export class WorldRenderer {
         y: p.y,
         draw: () => {
           if (!p.alive) ctx.globalAlpha = 0.5;
-          this.overlay.drawPlayer(ctx, p.x, p.y, 1);
+          this.overlay.drawPlayer(ctx, p.x, p.y, 1, p.job, a.phase, a.moving);
           drawPlayer(ctx, {
             x: p.x, y: p.y, facing: p.facing as Facing, phase: a.phase,
             moving: a.moving, swing: p.swingT,
