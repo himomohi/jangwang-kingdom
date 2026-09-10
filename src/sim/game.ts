@@ -828,7 +828,7 @@ export function updateGame(g: Game, input: Input, audio: Synth, dt: number): voi
     return;
   }
 
-  if (input.consume("i") || input.consume("I")) {
+  if (input.consume("i") || input.consume("b")) {
     g.bagOpen = !g.bagOpen;
     audio.ui();
     g.dirtyUi++;
@@ -843,7 +843,7 @@ export function updateGame(g: Game, input: Input, audio: Synth, dt: number): voi
       g.dialog = [
         "조작",
         "WASD / 방향키 이동 · 스페이스/클릭 공격 · E 상호작용",
-        "1 기본공격 · 2 전직기 · 3~5 소모품 · I 가방 · H 도움말",
+        "1 기본공격 · 2 전직기 · 3~5 소모품 · I/B 가방 · H 도움말",
       ];
     }
     audio.ui();

@@ -79,7 +79,7 @@ export class Hud {
         <button class="slot" data-slot="5"><em>5</em>${uses[2] ? `${ITEMS[uses[2].id].name}×${uses[2].qty}` : "—"}</button>
       </div>
       <div id="tools">
-        <button type="button" data-act="bag">가방 I</button>
+        <button type="button" data-act="bag">가방 I/B</button>
         <button type="button" data-act="help">도움 H</button>
       </div>
       ${
