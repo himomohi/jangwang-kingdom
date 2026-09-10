@@ -1,4 +1,5 @@
 import "./style.css";
+import { overlays } from "./art/overlay";
 import { warmArt } from "./art/sprites";
 import { cacheSize } from "./art/cache";
 import { Synth } from "./audio/synth";
@@ -26,6 +27,7 @@ const audio = new Synth();
 const hud = new Hud(hudRoot, audio);
 
 warmArt();
+void overlays.load();
 const game = createGame();
 hud.bind(game);
 

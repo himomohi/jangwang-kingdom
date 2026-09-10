@@ -47,6 +47,7 @@ npm run deploy
 - 평민 → 왕국기사 / 검객 / 비전술사 / 성소무녀 (`knight` `blader` `arcanist` `shrine`)
 - 적: 들판 슬라임, 들늑대, 길목 도적, 석실 그늘 + 엘리트 **철갑감시자**
 - 코드젠 픽셀 본체(관절·재료·망토/투구/무기) + 캐시. 16색은 `docs/palette-v1.md`(main `d972d54`)와 `src/art/palette.ts`에 동일 hex로 잠금, `#000` 아웃라인 없음
+- `public/sprites/` 기사·슬라임 PNG는 선택 오버레이(α≤0.32). 실루엣을 PNG로 대체하지 않음
 - 세계만 WebGL 블룸/CRT. HUD는 DOM
 - Web Audio 효과음·짧은 잔광 모티프
 - 의뢰: 왕국 외곽 들판에서 슬라임·도적 처치 후 성문 교관 찾기

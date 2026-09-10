@@ -1,3 +1,4 @@
+import { overlays } from "../art/overlay";
 import { actorSprite, dropSprite, enemySprite, fxSpark, npcSprite, tileSprite } from "../art/sprites";
 import { hexOf, PALETTE } from "../art/palette";
 import type { Game } from "../sim/game";
@@ -75,8 +76,12 @@ export function drawWorld(ctx: CanvasRenderingContext2D, g: Game): void {
     pile.push({
       y: m.y,
       fn: () => {
+        // drawEnemy: codegen silhouette first; PNG is a low-α hint only.
         const s = enemySprite(m.kind, m.facing, (m.anim | 0) % 2, m.elite);
-        ctx.drawImage(s, Math.round(m.x - 16 - ox), Math.round(m.y - 26 - oy));
+        const ex = Math.round(m.x - 16 - ox);
+        const ey = Math.round(m.y - 26 - oy);
+        ctx.drawImage(s, ex, ey);
+        if (m.kind === "slime") overlays.drawSlimeHint(ctx, ex, ey, g.time);
         const bw = m.elite ? 22 : 16;
         const hx = Math.round(m.x - bw / 2 - ox);
         const hy = Math.round(m.y - 30 - oy);
@@ -93,10 +98,14 @@ export function drawWorld(ctx: CanvasRenderingContext2D, g: Game): void {
     y: p.y,
     fn: () => {
       if (p.invuln > 0 && ((g.time * 20) | 0) % 2 === 0) return;
+      // drawPlayer: codegen silhouette first; knight PNG is a low-α hint only.
       const look = playerLook(p);
       const frame = p.moving ? (p.anim | 0) % 4 : 0;
       const s = actorSprite(look, p.facing, frame, p.attackT > 0);
-      ctx.drawImage(s, Math.round(p.x - 16 - ox), Math.round(p.y - 26 - oy));
+      const px = Math.round(p.x - 16 - ox);
+      const py = Math.round(p.y - 26 - oy);
+      ctx.drawImage(s, px, py);
+      if (look.job === "knight") overlays.drawKnightHint(ctx, px, py, g.time);
     },
   });
 

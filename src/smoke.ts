@@ -1,3 +1,4 @@
+import { HINT_ALPHA } from "./art/overlay";
 import { assertLocked16, PALETTE } from "./art/palette";
 import { Input } from "./input/keys";
 import { Synth } from "./audio/synth";
@@ -33,6 +34,7 @@ function assert(cond: boolean, msg: string): void {
 assertLocked16(DOC_HEX);
 assert(PALETTE.length === 16, "locked 16");
 assert(!PALETTE.some((h) => h.toUpperCase() === "#000000"), "no #000");
+assert(HINT_ALPHA <= 0.35, "png overlay stays a hint");
 
 const audio = new Synth();
 const input = new Input();
