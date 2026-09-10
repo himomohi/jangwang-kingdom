@@ -1,5 +1,9 @@
-/** LOCKED 16-color palette. Do not add colors. Never use #000 outlines. */
-export const PALETTE = [
+/**
+ * LOCKED 16-color palette.
+ * Source of truth: docs/palette-v1.md on main (d972d54).
+ * Do not add colors. Never use #000 outlines.
+ */
+export const LOCKED_16 = [
   "#0B0C14", // 0 심야
   "#1A1F2E", // 1 돌그림자
   "#2E3A4A", // 2 성벽돌
@@ -17,6 +21,8 @@ export const PALETTE = [
   "#E8D8C0", // 14 피부/천
   "#F0F0E8", // 15 하이라이트
 ] as const;
+
+export const PALETTE = LOCKED_16;
 
 export type PaletteIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
 
@@ -46,4 +52,15 @@ export const RGB: readonly [number, number, number][] = PALETTE.map((hex) => {
 
 export function hexOf(i: number): string {
   return PALETTE[Math.max(0, Math.min(15, i | 0))] ?? PALETTE[0];
+}
+
+export function assertLocked16(docHex: readonly string[]): void {
+  if (PALETTE.length !== 16) throw new Error("palette: must be 16 colors");
+  if (docHex.length !== 16) throw new Error("palette: docs/palette-v1.md must list 16 hex");
+  for (let i = 0; i < 16; i++) {
+    const code = PALETTE[i]!.toUpperCase();
+    const doc = docHex[i]!.toUpperCase();
+    if (code !== doc) throw new Error(`palette: index ${i} ${code} != doc ${doc}`);
+    if (code === "#000000" || code === "#000") throw new Error("palette: #000 forbidden");
+  }
 }

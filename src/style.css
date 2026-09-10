@@ -5,6 +5,11 @@
   --c3: #4a5a6a;
   --c4: #6a7a88;
   --c5: #8a9aaa;
+  --c6: #3a4a28;
+  --c7: #5a6a38;
+  --c8: #7a8a48;
+  --c9: #2a3a5a;
+  --c10: #4a6a8a;
   --c11: #c8a060;
   --c12: #e09040;
   --c13: #c05060;
@@ -102,7 +107,7 @@ html {
   background: var(--c13);
 }
 .bar.mp > i {
-  background: #4a6a8a;
+  background: var(--c10);
 }
 .bar.xp > i {
   background: var(--c11);

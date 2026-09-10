@@ -1,3 +1,4 @@
+import { assertLocked16, PALETTE } from "./art/palette";
 import { Input } from "./input/keys";
 import { Synth } from "./audio/synth";
 import { chooseJob, createGame, updateGame, useItem } from "./sim/game";
@@ -5,9 +6,33 @@ import { ITEMS } from "./sim/items";
 import { TILE } from "./sim/types";
 import { walkable } from "./sim/world";
 
+/** Must match docs/palette-v1.md (main d972d54). */
+const DOC_HEX = [
+  "#0B0C14",
+  "#1A1F2E",
+  "#2E3A4A",
+  "#4A5A6A",
+  "#6A7A88",
+  "#8A9AAA",
+  "#3A4A28",
+  "#5A6A38",
+  "#7A8A48",
+  "#2A3A5A",
+  "#4A6A8A",
+  "#C8A060",
+  "#E09040",
+  "#C05060",
+  "#E8D8C0",
+  "#F0F0E8",
+] as const;
+
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(`smoke: ${msg}`);
 }
+
+assertLocked16(DOC_HEX);
+assert(PALETTE.length === 16, "locked 16");
+assert(!PALETTE.some((h) => h.toUpperCase() === "#000000"), "no #000");
 
 const audio = new Synth();
 const input = new Input();
