@@ -14,11 +14,11 @@ export interface ActorLook {
 }
 
 const JOB_CAPE: Record<JobId, number> = {
-  commoner: C.stone,
+  commoner: C.ember,
   knight: C.life,
   blader: C.water,
   arcanist: C.deepWater,
-  shrine: C.cloth,
+  shrine: C.metal,
 };
 
 const JOB_BODY: Record<JobId, number> = {
@@ -217,16 +217,15 @@ export function actorSprite(look: ActorLook, facing: Facing, frame: number, atta
         }
       }
 
-      const swing = attack ? (facing === 1 ? -7 : facing === 2 ? 7 : 0) : 0;
-      const wy = attack ? 9 + fy : 15 + fy;
-      drawWeapon(b, look.weapon, facing, hx, wy, swing);
-
       if (facing !== 3) {
         b.fill(hx - 5, 14 + fy, 3, 6, C.cloth);
         b.fill(hx + 3, 14 + fy, 3, 6, C.cloth);
       }
 
       b.rim(C.stone);
+      const swing = attack ? (facing === 1 ? -7 : facing === 2 ? 7 : 0) : 0;
+      const wy = attack ? 9 + fy : 15 + fy;
+      drawWeapon(b, look.weapon, facing, hx, wy, swing);
     }, 32, 32),
   );
 }

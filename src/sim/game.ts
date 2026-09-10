@@ -313,17 +313,20 @@ function spawnMobs(seed: number): Mob[] {
   for (let i = 0; i < 7; i++) {
     const x = (16 + irand(rng, 56)) * TILE + 8;
     const y = (20 + irand(rng, 22)) * TILE + 8;
-    list.push(mob("slime", "들판 슬라임", x, y, { hp: 16, atk: 3, def: 0, xp: 8, speed: 26 }));
+    list.push(mob("slime", "들판 슬라임", x, y, { hp: 14, atk: 2, def: 0, xp: 8, speed: 24 }));
   }
+  list.push(mob("slime", "들판 슬라임", 45 * TILE + 8, 48 * TILE + 8, { hp: 14, atk: 2, def: 0, xp: 8, speed: 24 }));
+  list.push(mob("slime", "들판 슬라임", 52 * TILE + 8, 47 * TILE + 8, { hp: 14, atk: 2, def: 0, xp: 8, speed: 24 }));
   for (let i = 0; i < 3; i++) {
     const x = (10 + irand(rng, 16)) * TILE + 8;
     const y = (24 + irand(rng, 18)) * TILE + 8;
     list.push(mob("wolf", "들늑대", x, y, { hp: 26, atk: 6, def: 1, xp: 14, speed: 40 }));
   }
   for (let i = 0; i < 3; i++) {
-    const x = (44 + irand(rng, 8)) * TILE + 8;
-    const y = (20 + irand(rng, 24)) * TILE + 8;
-    list.push(mob("bandit", "길목 도적", x, y, { hp: 28, atk: 6, def: 1, xp: 18, speed: 34 }));
+    const west = i % 2 === 0;
+    const x = (west ? 30 + irand(rng, 10) : 56 + irand(rng, 10)) * TILE + 8;
+    const y = (26 + irand(rng, 16)) * TILE + 8;
+    list.push(mob("bandit", "길목 도적", x, y, { hp: 26, atk: 5, def: 1, xp: 18, speed: 32 }));
   }
   for (let i = 0; i < 3; i++) {
     const x = (42 + irand(rng, 12)) * TILE + 8;
@@ -482,7 +485,7 @@ function hurtPlayer(g: Game, audio: Synth, dmg: number): void {
   if (p.invuln > 0) return;
   const dealt = Math.max(1, dmg - p.def);
   p.hp -= dealt;
-  p.invuln = 0.45;
+  p.invuln = 0.85;
   float(g, p.x, p.y - 10, `${dealt}`, 13);
   audio.hurt();
   if (p.hp <= 0) {
@@ -535,6 +538,8 @@ function nearestMob(g: Game, x: number, y: number, range: number): Mob | null {
 
 function playerAttack(g: Game, audio: Synth, skill: boolean): void {
   const p = g.player;
+  const aim = nearestMob(g, p.x, p.y, 48);
+  if (aim) p.facing = facingOf(aim.x - p.x, aim.y - p.y, p.facing);
   const caster = p.job === "arcanist" || p.job === "shrine";
   const cost = skill ? (p.job === "commoner" ? 0 : 8) : 0;
   if (skill && p.job === "commoner") return;
@@ -568,21 +573,18 @@ function playerAttack(g: Game, audio: Synth, skill: boolean): void {
     return;
   }
 
-  const reach = skill && p.job === "knight" ? 34 : 22;
+  const reach = skill && p.job === "knight" ? 36 : 28;
   const hits = skill && p.job === "blader" ? 3 : 1;
   for (let i = 0; i < hits; i++) {
-    const range = reach + i * 4;
-    const px = p.x + d.x * (12 + i * 6);
-    const py = p.y + d.y * (10 + i * 5);
+    const px = p.x + d.x * (14 + i * 6);
+    const py = p.y + d.y * (12 + i * 5);
     for (const m of g.mobs) {
       if (m.dead) continue;
-      if (dist(px, py, m.x, m.y) < range) {
+      if (dist(px, py, m.x, m.y) < reach) {
         hurt(g, audio, m, p.atk + (skill ? 4 : 0) + i);
-        if (skill && p.job === "knight") {
-          const n = tryMove(g, m.x, m.y, m.x + d.x * 10, m.y + d.y * 10, m.radius);
-          m.x = n.x;
-          m.y = n.y;
-        }
+        const n = tryMove(g, m.x, m.y, m.x + d.x * 14, m.y + d.y * 12, m.radius);
+        m.x = n.x;
+        m.y = n.y;
       }
     }
   }
@@ -761,9 +763,25 @@ function updateMobs(g: Game, audio: Synth, dt: number): void {
       m.y = Math.min(n.y, townY - 4);
       m.facing = facingOf(dx, dy, m.facing);
     }
-    if (m.y < townY && d < 14 + (m.elite ? 4 : 0) && m.attackCd <= 0 && g.screen === "play") {
-      m.attackCd = m.elite ? 1.3 : 0.9;
+    for (const o of g.mobs) {
+      if (o === m || o.dead) continue;
+      const gap = dist(m.x, m.y, o.x, o.y);
+      if (gap < 14 && gap > 0.1) {
+        const px = ((m.x - o.x) / gap) * 2;
+        const py = ((m.y - o.y) / gap) * 2;
+        const sep = tryMove(g, m.x, m.y, m.x + px, m.y + py, m.radius);
+        m.x = sep.x;
+        m.y = Math.min(sep.y, townY - 4);
+      }
+    }
+    if (m.y < townY && d < 13 + (m.elite ? 3 : 0) && m.attackCd <= 0 && g.screen === "play") {
+      m.attackCd = m.elite ? 1.6 : 1.35;
       hurtPlayer(g, audio, m.atk);
+      const kx = (p.x - m.x) / (d || 1);
+      const ky = (p.y - m.y) / (d || 1);
+      const pushed = tryMove(g, p.x, p.y, p.x + kx * 16, p.y + ky * 16, 5);
+      p.x = pushed.x;
+      p.y = pushed.y;
     }
   }
 }

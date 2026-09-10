@@ -32,25 +32,36 @@ const trainer = g.npcs.find((n) => n.id === "trainer");
 assert(!!trainer, "trainer exists");
 assert(trainer!.y >= 52 * TILE, "trainer in town");
 
-const slime = g.mobs.find((m) => m.kind === "slime" && !m.dead)!;
-const beforeHp = slime.hp;
-slime.x = g.player.x + 12;
-slime.y = g.player.y;
-input.pressed.add(" ");
-updateGame(g, input, audio, 1 / 60);
-assert(slime.hp < beforeHp || slime.dead, "attack damages slime");
-
-slime.hp = 0;
-const q0 = g.quest.slimes;
-input.pressed.add("1");
-updateGame(g, input, audio, 1 / 60);
-if (!slime.dead) {
-  slime.hp = 1;
-  input.pressed.add("1");
-  g.player.attackCd = 0;
-  updateGame(g, input, audio, 1 / 60);
+g.player.x = 48 * TILE + 8;
+g.player.y = 46 * TILE + 8;
+const lone = g.mobs.find((m) => m.kind === "slime" && !m.dead)!;
+for (const m of g.mobs) {
+  if (m !== lone) {
+    m.x = 8;
+    m.y = 8;
+    m.sx = 8;
+    m.sy = 8;
+    m.aggro = 0;
+  }
 }
-assert(g.quest.slimes >= q0, "quest can count slimes");
+lone.x = g.player.x + 14;
+lone.y = g.player.y;
+lone.sx = lone.x;
+lone.sy = lone.y;
+const hpStart = g.player.hp;
+let swings = 0;
+while (!lone.dead && swings < 24) {
+  g.player.attackCd = 0;
+  input.pressed.add("1");
+  updateGame(g, input, audio, 1 / 60);
+  for (let i = 0; i < 18; i++) updateGame(g, input, audio, 1 / 60);
+  swings++;
+}
+assert(lone.dead, `solo slime dies after ${swings} swings (hp ${lone.hp})`);
+assert(g.player.hp > 0, "player survives one slime");
+assert(g.player.hp >= hpStart - 24, "slime does not dumpster player");
+
+assert(g.quest.slimes >= 1, "quest counts slimes");
 
 g.drops.push({ uid: 999, x: g.player.x, y: g.player.y, item: "iron_helm", qty: 1 });
 const def0 = g.player.def;
