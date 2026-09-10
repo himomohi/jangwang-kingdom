@@ -1,5 +1,5 @@
-# sprites
+# Sprites
 
-Optional transparent PNG overlays only.
-Code-generated bodies in `src/art` are the primary look.
-Do not drop full character replacements here.
+Optional overlays for runtime display. Codegen body remains primary.
+
+These art assets are homage / original pipeline output — not Actoz Soft assets.
