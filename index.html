@@ -11,8 +11,8 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23101828'/%3E%3Crect x='6' y='2' width='4' height='12' fill='%23e8933c'/%3E%3Crect x='2' y='6' width='12' height='4' fill='%23f2c14e'/%3E%3C/svg%3E" />
     <title>잔광왕국 — Jangwang Kingdom</title>
-    <script type="module" crossorigin src="/jangwang-kingdom/assets/index-C3saawK3.js"></script>
-    <link rel="stylesheet" crossorigin href="/jangwang-kingdom/assets/index-ropRPMVP.css">
+    <script type="module" crossorigin src="/jangwang-kingdom/assets/index-oPJo9pKz.js"></script>
+    <link rel="stylesheet" crossorigin href="/jangwang-kingdom/assets/index-D65BXY3G.css">
   </head>
   <body>
     <div id="app">
@@ -84,6 +84,7 @@
             <div><b>물약</b><span>P · 모바일: 🧪</span></div>
             <div><b>가방/상태</b><span>I / C · 우상단 버튼</span></div>
             <div><b>음소거/메뉴</b><span>M / Esc</span></div>
+            <div><b>화면 효과</b><span>B 블룸 · V CRT · G 화질 (일시정지 메뉴에서도 조절)</span></div>
           </div>
           <p class="help-tip">Lv.5 달성 후 엠버게이트의 <b>전직관</b>에게 말을 걸어 전직하세요.<br/>북쪽 폐허에는 강적 <b>철갑감시자</b>가 있습니다.</p>
           <button id="btn-help-back" class="menu-btn">돌아가기</button>
@@ -102,6 +103,20 @@
             <button id="btn-save" class="menu-btn">💾 저장하기</button>
             <button id="btn-resume" class="menu-btn">▶ 계속하기</button>
             <button id="btn-quit-title" class="menu-btn">타이틀로</button>
+          </div>
+          <div id="post-settings">
+            <h3>✨ 화면 효과</h3>
+            <div class="post-row">
+              <button id="btn-bloom" class="mini-btn post-btn">🌟 블룸 ON</button>
+              <button id="btn-crt" class="mini-btn post-btn">📺 CRT ON</button>
+              <button id="btn-quality" class="mini-btn post-btn">✨ 화질: high</button>
+            </div>
+            <div class="post-row">
+              <label for="bloom-range">블룸 강도</label>
+              <input id="bloom-range" type="range" min="0" max="200" value="90" step="5" />
+              <span id="bloom-val">0.9</span>
+            </div>
+            <p class="panel-hint">B 블룸 · V CRT · G 화질 (자동 저장됨)</p>
           </div>
         </div>
       </div>
